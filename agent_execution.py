@@ -5,7 +5,7 @@ from pathlib import Path
 from azure.identity import DefaultAzureCredential
 from azure.ai.projects import AIProjectClient
 from agent_framework.foundry import FoundryAgent
-from classes.azure_ai_services import analyze_document_with_intelligence
+from classes.weather_services import get_forecast_weather, get_current_weather
 
 logging.getLogger("agent_framework").setLevel(logging.ERROR)
 
@@ -14,7 +14,6 @@ agent_name = os.getenv("AGENT_NAME")
 
 credential = DefaultAzureCredential()
 project_client = AIProjectClient(endpoint=endpoint, credential=credential)
-
 # =============================================================================
 # AGENT INITIALIZATION
 # =============================================================================
@@ -26,14 +25,25 @@ def create_agent():
         project_endpoint=endpoint,
         agent_name=agent_name,
         credential=credential,
-        tools=[analyze_document_with_intelligence],
+        tools=[get_forecast_weather, get_current_weather],
     )
     return agent
 
 
+def extract_url_citations(result) -> list[tuple[str, str]]:
+    citations = {}
+    for message in getattr(result, "messages", None) or []:
+        for content in getattr(message, "contents", None) or []:
+            for annotation in getattr(content, "annotations", None) or []:
+                url = getattr(annotation, "url", None)
+                if url:
+                    citations[url] = getattr(annotation, "title", None) or url
+    return [(title, url) for url, title in citations.items()]
+
+
 async def run_agent(agent):
     print(
-        "Interactive workflow-agent mode started with Document Intelligence Tool support. Type 'exit' to stop.\n"
+        "Interactive agent mode started.\n"
     )
     session = await agent.create_conversation()
 
@@ -58,6 +68,11 @@ async def run_agent(agent):
             print("ASSISTANT REPLY:")
             print("=" * 50)
             print(final_text)
+            citations = extract_url_citations(result)
+            if citations:
+                print("\nSOURCES (web search):")
+                for title, url in citations:
+                    print(f"- {title}: {url}")
             print("=" * 50)
 
         except Exception as e:

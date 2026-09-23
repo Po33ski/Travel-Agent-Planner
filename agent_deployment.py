@@ -44,9 +44,9 @@ def create_or_update_agent(
 
     print(f"🔄 Processing agent: {agent_name}")
 
-    weather_tool = FunctionTool(
-        name="get_weather_info",
-        description="Get current weather information for a given location.",
+    forecast_tool = FunctionTool(
+        name="get_forecast_weather",
+        description="Get weather forecast for a given location and date frame.",
         parameters={
                 "type": "object",
                 "properties": {
@@ -54,11 +54,22 @@ def create_or_update_agent(
                         "type": "string",
                         "description": "The location for which to get weather information.",
                     },
-                    "date-frame": {
+                "required": ["location"],
+            },
+        }
+    )
+
+    current_weather_tool = FunctionTool(
+        name="get_current_weather",
+        description="Get current weather for a given location.",
+        parameters={
+                "type": "object",
+                "properties": {
+                    "location": {
                         "type": "string",
-                        "description": "The date frame for the weather information (e.g., '5/10/2026', '5/12/2026-5/15/2026').",
-                },
-                "required": ["location", "date-frame"],
+                        "description": "The location for which to get current weather information.",
+                    },
+                "required": ["location"],
             },
         }
     )
@@ -78,7 +89,7 @@ def create_or_update_agent(
             definition=PromptAgentDefinition(
                 model=llm_model_deployment_name,
                 instructions=system_prompt,
-                tools=[weather_tool, web_search_tool],
+                tools=[forecast_tool, current_weather_tool, web_search_tool],
             ),
         )
         print(f"   ✅ Agent created or updated successfully (ID: {agent.id})")
