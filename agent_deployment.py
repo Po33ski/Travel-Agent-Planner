@@ -54,8 +54,8 @@ def create_or_update_agent(
                         "type": "string",
                         "description": "The location for which to get weather information.",
                     },
-                "required": ["location"],
             },
+            "required": ["location"],
         }
     )
 
@@ -69,8 +69,8 @@ def create_or_update_agent(
                         "type": "string",
                         "description": "The location for which to get current weather information.",
                     },
+                },
                 "required": ["location"],
-            },
         }
     )
 

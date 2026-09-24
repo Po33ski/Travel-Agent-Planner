@@ -29,7 +29,6 @@ def create_agent():
     )
     return agent
 
-
 def extract_url_citations(result) -> list[tuple[str, str]]:
     citations = {}
     for message in getattr(result, "messages", None) or []:

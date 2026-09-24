@@ -95,7 +95,7 @@ def get_forecast_weather(location: str, date_frame: str) -> Dict[str, Any]:
     Returns:
         Dict containing weather data from API, or {"error": "..."} if the call failed.
     """
-    api_key = os.getenv("WEATHER_API_KEY")
+    api_key = os.getenv("VISUAL_CROSSING_API_KEY")
     if not api_key:
         return {"error": "Weather service API key is not configured."}
 
@@ -114,7 +114,7 @@ def get_current_weather(location: str) -> Dict[str, Any]:
     Returns:
         Dict containing weather data from API, or {"error": "..."} if the call failed.
     """
-    api_key = os.getenv("WEATHER_API_KEY")
+    api_key = os.getenv("VISUAL_CROSSING_API_KEY")
     if not api_key:
         return {"error": "Weather service API key is not configured."}
 
