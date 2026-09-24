@@ -12,7 +12,7 @@ class WeatherService:
     def __init__(self, api_key: str):
         self.api_key = api_key
 
-    def get_forecast(city: str) -> Dict[str, Any]:
+    def get_forecast(self, city: str) -> Dict[str, Any]:
         """
         Fetch weather forecast data for a given city using the Visual Crossing API.
         Returns a dictionary with weather data, or {"error": "message"} on failure.
@@ -47,7 +47,7 @@ class WeatherService:
         except json.JSONDecodeError:
             return {"error": "Weather service returned invalid data."}
 
-    def get_current_weather(city: str) -> Dict[str, Any]:
+    def get_current_weather(self, city: str) -> Dict[str, Any]:
         """
         Fetch current weather data for a given city using the Visual Crossing API.
         Returns a dictionary with weather data, or {"error": "message"} on failure.
