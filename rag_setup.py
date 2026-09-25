@@ -15,7 +15,6 @@ from classes.foundry_iq_services import FoundryIQService
 # Values come from the outputs of resource_deployment.bicep
 search_endpoint = os.getenv("SEARCH_ENDPOINT")
 storage_account_url = os.getenv("STORAGE_ACCOUNT_URL")
-storage_resource_id = os.getenv("STORAGE_RESOURCE_ID")
 blob_container_name = os.getenv("BLOB_CONTAINER_NAME", "travel-guide")
 aoai_endpoint = os.getenv("AOAI_ENDPOINT")
 llm_model_deployment_name = os.getenv("LLM_MODEL_DEPLOYMENT_NAME")
@@ -23,6 +22,9 @@ embedding_model_deployment_name = os.getenv("EMBEDDING_MODEL_DEPLOYMENT_NAME")
 knowledge_base_name = os.getenv("KNOWLEDGE_BASE_NAME", "travel-guide-kb")
 knowledge_source_name = os.getenv("KNOWLEDGE_SOURCE_NAME", "travel-guide-ks")
 source_file_path = os.getenv("SOURCE_FILE_PATH")
+# Secrets from .env: keys Azure AI Search uses to reach Storage and the models
+storage_connection_string = os.getenv("STORAGE_CONNECTION_STRING")
+aoai_api_key = os.getenv("AOAI_API_KEY")
 
 # Model names must match the deployments in resource_deployment.bicep
 LLM_MODEL_NAME = "gpt-5-mini"
@@ -33,11 +35,12 @@ KNOWLEDGE_DESCRIPTION = "Travel guide to 182 popular cities in Europe, Asia and 
 REQUIRED_SETTINGS = {
     "SEARCH_ENDPOINT": search_endpoint,
     "STORAGE_ACCOUNT_URL": storage_account_url,
-    "STORAGE_RESOURCE_ID": storage_resource_id,
     "AOAI_ENDPOINT": aoai_endpoint,
     "LLM_MODEL_DEPLOYMENT_NAME": llm_model_deployment_name,
     "EMBEDDING_MODEL_DEPLOYMENT_NAME": embedding_model_deployment_name,
     "SOURCE_FILE_PATH": source_file_path,
+    "STORAGE_CONNECTION_STRING": storage_connection_string,
+    "AOAI_API_KEY": aoai_api_key,
 }
 
 # =============================================================================
@@ -59,6 +62,7 @@ def main() -> int:
         return 1
 
     try:
+        # Our own calls (upload, creating the knowledge source/base) use Entra ID (az login)
         credential = DefaultAzureCredential()
 
         service = FoundryIQService(
@@ -68,13 +72,14 @@ def main() -> int:
                 credential=credential,
             ),
             index_client=SearchIndexClient(endpoint=search_endpoint, credential=credential),
-            # Azure AI Search reads the container with its own managed identity
-            storage_connection=f"ResourceId={storage_resource_id}",
+            # Azure AI Search calls Storage and the models itself, later and in the background, with keys
+            storage_connection=storage_connection_string,
             aoai_endpoint=aoai_endpoint,
             chat_deployment=llm_model_deployment_name,
             chat_model=LLM_MODEL_NAME,
             embedding_deployment=embedding_model_deployment_name,
             embedding_model=EMBEDDING_MODEL_NAME,
+            aoai_api_key=aoai_api_key,
         )
 
         kb_name = service.setup(
@@ -85,7 +90,7 @@ def main() -> int:
         )
 
         print(f"\n✨ Knowledge base ready: {kb_name}")
-        print(f"   MCP endpoint: {search_endpoint}/knowledgebases/{kb_name}/mcp?api-version=2026-08-01-preview")
+        print(f"   MCP endpoint: {FoundryIQService.get_mcp_endpoint(search_endpoint, kb_name)}")
         return 0
 
     except Exception as e:

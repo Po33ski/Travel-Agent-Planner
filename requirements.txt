@@ -1,7 +1,9 @@
 pyyaml
 azure-identity
-azure-ai-projects
+azure-ai-projects>=2.0.0
 azure-core
 agent-framework
 agent-framework-foundry
-azure-ai-contentunderstanding
+requests
+azure-storage-blob
+azure-search-documents>=12.1.0b2

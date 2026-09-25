@@ -69,7 +69,7 @@ async def run_agent(agent):
             print(final_text)
             citations = extract_url_citations(result)
             if citations:
-                print("\nSOURCES (web search):")
+                print("\nSOURCES (knowledge base / web search):")
                 for title, url in citations:
                     print(f"- {title}: {url}")
             print("=" * 50)

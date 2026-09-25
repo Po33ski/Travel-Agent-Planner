@@ -8,18 +8,20 @@ Flow:
                                           index and indexer from the container
     3. wait_for_ingestion()             – wait until the first indexing run has finished
     4. create_knowledge_base()          – knowledge base that references the knowledge source(s)
-    5. create_context_provider()        – context provider for Microsoft Agent Framework
- 
+    5. create_mcp_tool()                – MCP tool that connects a Foundry agent to the knowledge base
+
 Requirements (preview APIs, 2026-08-01-preview):
-    pip install azure-identity azure-storage-blob
+    pip install azure-identity azure-storage-blob "azure-ai-projects>=2.0.0"
     pip install --pre azure-search-documents            # tested against 12.1.0b2
-    pip install --pre agent-framework-azure-ai-search   # tested against 1.0.0b260910
- 
-RBAC:
-    - Search service managed identity: "Storage Blob Data Reader" on the storage account
-      and "Cognitive Services User" on the Azure OpenAI / Foundry resource.
-    - Identity running this code: "Storage Blob Data Contributor" on the container and
-      "Search Service Contributor" + "Search Index Data Reader" on the search service.
+
+Authentication (hybrid):
+    - Identity running this code (Entra ID, DefaultAzureCredential): "Storage Blob Data Contributor"
+      on the storage account and "Search Service Contributor" + "Search Index Data Contributor"
+      on the search service.
+    - Search → Storage: storage account connection string with the account key.
+    - Search → models: Azure OpenAI / Foundry API key (aoai_api_key).
+    - Agent → knowledge base: Search query key stored in the RemoteTool project connection
+      (created in resource_deployment.bicep).
 """
  
 from __future__ import annotations
@@ -28,6 +30,7 @@ import logging
 import time
 from pathlib import Path
  
+from azure.ai.projects.models import MCPTool
 from azure.search.documents.indexes import SearchIndexClient
 from azure.search.documents.indexes.models import (
     AzureBlobKnowledgeSource,
@@ -45,9 +48,14 @@ from azure.search.documents.knowledgebases.models import (
     KnowledgeSourceIngestionParameters,
 )
 from azure.storage.blob import ContainerClient, ContentSettings
-from agent_framework_azure_ai_search import AzureAISearchContextProvider
+
 logger = logging.getLogger(__name__)
- 
+
+# API version of the knowledge base MCP endpoint (must match the RemoteTool connection target)
+KNOWLEDGE_BASE_MCP_API_VERSION = "2026-08-01-preview"
+# The only MCP tool supported by Foundry Agent Service for knowledge bases
+KNOWLEDGE_BASE_MCP_TOOL = "knowledge_base_retrieve"
+
 _CONTENT_TYPES = {
     ".md": "text/markdown",
     ".txt": "text/plain",
@@ -77,17 +85,20 @@ class FoundryIQService:
         chat_model: str,
         embedding_deployment: str,
         embedding_model: str,
+        aoai_api_key: str | None = None,
     ) -> None:
         """
         Args:
             container_client: Blob container that holds the source documents.
             index_client: Azure AI Search index client (manages knowledge sources/bases).
-            storage_connection: Connection string used by Azure AI Search to read the
-                container. Prefer managed identity:
-                "ResourceId=/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Storage/storageAccounts/<account>"
+            storage_connection: Connection string used by Azure AI Search to read the container:
+                an account-key connection string ("DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...")
+                or, with managed identity, "ResourceId=/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Storage/storageAccounts/<account>"
             aoai_endpoint: Azure OpenAI / Foundry resource URL, e.g. https://<name>.openai.azure.com
             chat_deployment / chat_model: chat model used for ingestion and query planning.
             embedding_deployment / embedding_model: embedding model used for vectorisation.
+            aoai_api_key: API key Azure AI Search uses to call the models.
+                Leave None when the search service uses its managed identity instead.
         """
         self._container = container_client
         self._index_client = index_client
@@ -96,11 +107,13 @@ class FoundryIQService:
             resource_url=aoai_endpoint,
             deployment_name=chat_deployment,
             model_name=chat_model,
+            api_key=aoai_api_key,
         )
         self._embedding = AzureOpenAIVectorizerParameters(
             resource_url=aoai_endpoint,
             deployment_name=embedding_deployment,
             model_name=embedding_model,
+            api_key=aoai_api_key,
         )
  
     # ------------------------------------------------------------------ 1. upload
@@ -215,18 +228,35 @@ class FoundryIQService:
  
     # ------------------------------------------------------------------ 5. agent wiring
     @staticmethod
-    def create_context_provider(knowledge_base_name: str, search_endpoint: str, credential):
-        """Return an Agent Framework context provider for the knowledge base.
- 
-        `credential` should be an async credential (azure.identity.aio.DefaultAzureCredential).
-        Use it with: Agent(..., context_providers=[provider]) and `async with provider:`.
+    def get_mcp_endpoint(search_endpoint: str, knowledge_base_name: str) -> str:
+        """Return the MCP endpoint URL of a knowledge base."""
+        return (
+            f"{search_endpoint.rstrip('/')}/knowledgebases/{knowledge_base_name}"
+            f"/mcp?api-version={KNOWLEDGE_BASE_MCP_API_VERSION}"
+        )
+
+    @staticmethod
+    def create_mcp_tool(
+        search_endpoint: str,
+        knowledge_base_name: str,
+        project_connection_name: str,
+        server_label: str = "travel-guide",
+        server_description: str | None = None,
+    ) -> MCPTool:
+        """Return an MCP tool that gives a Foundry (prompt) agent access to the knowledge base.
+
+        The tool runs server-side in Foundry Agent Service: the agent calls the knowledge base
+        MCP endpoint with the credentials stored in the RemoteTool project connection
+        `project_connection_name` (created in resource_deployment.bicep).
+        Add it to PromptAgentDefinition(tools=[...]); no client-side code is needed.
         """
- 
-        return AzureAISearchContextProvider(
-            endpoint=search_endpoint,
-            knowledge_base_name=knowledge_base_name,
-            credential=credential,
-            mode="agentic",
+        return MCPTool(
+            server_label=server_label,
+            server_url=FoundryIQService.get_mcp_endpoint(search_endpoint, knowledge_base_name),
+            server_description=server_description,
+            require_approval="never",  # the tool only reads data; no approval round-trip
+            allowed_tools=[KNOWLEDGE_BASE_MCP_TOOL],
+            project_connection_id=project_connection_name,
         )
  
     # ------------------------------------------------------------------ convenience

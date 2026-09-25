@@ -76,6 +76,9 @@ resource aiProject 'Microsoft.CognitiveServices/accounts/projects@2026-05-01' = 
 resource llmModelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2026-05-01'= {
   parent: aiFoundry
   name: llmModelDeploymentName
+  dependsOn: [
+    aiProject
+  ]
   sku : {
     capacity: 50 // Rate limit in thousands of tokens per minute (50 = 50K TPM).
     name: 'GlobalStandard'
@@ -114,17 +117,16 @@ resource embeddingModelDeployment 'Microsoft.CognitiveServices/accounts/deployme
 resource searchService 'Microsoft.Search/searchServices@2025-05-01' = {
   name: aiSearchName
   location: location
-  sku: { name: 'basic' } // lowest tier with managed identity and semantic ranker
-  identity: { type: 'SystemAssigned' }
+  sku: { name: 'free' } // no fixed cost; services connect with keys, so no managed identity is needed
   properties: {
     replicaCount: 1
     partitionCount: 1
     hostingMode: 'Default'
     publicNetworkAccess: 'enabled'
-    semanticSearch: 'free' // semantic ranker is used by agentic retrieval
+    semanticSearch: 'free' // semantic ranker is used by agentic retrieval; free plan returns errors instead of charges
     authOptions: {
       aadOrApiKey: {
-        aadAuthFailureMode: 'http401WithBearerChallenge' // enables Entra ID (RBAC) auth
+        aadAuthFailureMode: 'http401WithBearerChallenge' // Entra ID for the user, API keys for the services
       }
     }
   }
@@ -140,7 +142,7 @@ resource storage 'Microsoft.Storage/storageAccounts@2024-01-01' = {
     accessTier: 'Hot'
     minimumTlsVersion: 'TLS1_2'
     allowBlobPublicAccess: false
-    allowSharedKeyAccess: false // managed identity / Entra ID only
+    allowSharedKeyAccess: true // Search indexer reads the container with the account key
     supportsHttpsTrafficOnly: true
   }
 }
@@ -157,60 +159,67 @@ resource container 'Microsoft.Storage/storageAccounts/blobServices/containers@20
 }
 
 // ------------------------------------------------------------------ project connection to the knowledge base (MCP)
-// Stores only the URL, so it can be created before the knowledge base exists.
+// Stores only the URL and key, so it can be created before the knowledge base exists.
 var knowledgeBaseMcpEndpoint = 'https://${searchService.name}.search.windows.net/knowledgebases/${knowledgeBaseName}/mcp?api-version=${knowledgeBaseApiVersion}'
 
+// Key-based MCP connection: the agent sends the Search query key (read-only) in the api-key header.
+// The key is read from the search service during deployment, so it never appears in code or outputs.
 resource kbConnection 'Microsoft.CognitiveServices/accounts/projects/connections@2025-10-01-preview' = {
   parent: aiProject
   name: knowledgeBaseConnectionName
   properties: {
     category: 'RemoteTool'
-    // Value from the Foundry IQ docs; not yet in Bicep's type definitions.
-    #disable-next-line BCP036
-    authType: 'ProjectManagedIdentity'
+    authType: 'CustomKeys'
     target: knowledgeBaseMcpEndpoint
     isSharedToAll: true
-    audience: 'https://search.azure.com/'
-    metadata: { ApiType: 'Azure' }
+    credentials: {
+      keys: {
+        'api-key': searchService.listQueryKeys().value[0].key
+      }
+    }
+    metadata: { type: 'generic_mcp' }
   }
 }
 
 // ------------------------------------------------------------------ role assignments: service → service
 // Search reads documents from the blob container
-resource searchToStorage 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: storage
-  name: guid(storage.id, searchService.id, roles.storageBlobDataReader)
-  properties: {
-    principalId: searchService.identity.principalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.storageBlobDataReader)
-  }
-}
+// roles asigned to the search service's managed identity, allowing it to read blob data from the storage account. 
+// ONLY IN THE CASE OF USE MANAGED IDENTITY AUTHENTICATION. If you are using shared key or SAS token authentication, this role assignment is not necessary.
+// resource searchToStorage 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+//   scope: storage
+//   name: guid(storage.id, searchService.id, roles.storageBlobDataReader)
+//   properties: {
+//     principalId: searchService.identity.principalId
+//     principalType: 'ServicePrincipal'
+//     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.storageBlobDataReader)
+//   }
+// }
 
-// Search calls the embedding and chat models (ingestion, query planning)
-resource searchToFoundry 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: aiFoundry
-  name: guid(aiFoundry.id, searchService.id, roles.cognitiveServicesUser)
-  properties: {
-    principalId: searchService.identity.principalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.cognitiveServicesUser)
-  }
-}
+// // Search calls the embedding and chat models (ingestion, query planning)
+// resource searchToFoundry 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+//   scope: aiFoundry
+//   name: guid(aiFoundry.id, searchService.id, roles.cognitiveServicesUser)
+//   properties: {
+//     principalId: searchService.identity.principalId
+//     principalType: 'ServicePrincipal'
+//     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.cognitiveServicesUser)
+//   }
+// }
 
-// Agent (project managed identity) queries the knowledge base over MCP
-resource projectToSearch 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: searchService
-  name: guid(searchService.id, aiProject.id, roles.searchIndexDataReader)
-  properties: {
-    principalId: aiProject.identity.principalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.searchIndexDataReader)
-  }
-}
+// // Agent (project managed identity) queries the knowledge base over MCP
+// resource projectToSearch 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+//   scope: searchService
+//   name: guid(searchService.id, aiProject.id, roles.searchIndexDataReader)
+//   properties: {
+//     principalId: aiProject.identity.principalId
+//     principalType: 'ServicePrincipal'
+//     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.searchIndexDataReader)
+//   }
+// }
 
 // ------------------------------------------------------------------ role assignments: user → service (rag_setup.py)
-// Upload files to the container (shared key access is disabled)
+// The user's own calls use Entra ID (DefaultAzureCredential); Owner has no data-plane rights, so these are needed.
+// Upload files to the container
 resource userToStorage 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: storage
   name: guid(storage.id, userPrincipalId, roles.storageBlobDataContributor)
@@ -250,7 +259,9 @@ output llmModelDeploymentName string = llmModelDeployment.name
 output embeddingModelDeploymentName string = embeddingModelDeployment.name
 output searchEndpoint string = 'https://${searchService.name}.search.windows.net'
 output storageAccountUrl string = storage.properties.primaryEndpoints.blob
-output storageResourceId string = storage.id
+// Names for the key commands in scripts/01_resource_deployment.sh (keys are never output)
+output storageAccountName string = storage.name
+output aiFoundryName string = aiFoundry.name
 output blobContainerName string = container.name
 output knowledgeBaseName string = knowledgeBaseName
 output knowledgeBaseConnectionName string = kbConnection.name

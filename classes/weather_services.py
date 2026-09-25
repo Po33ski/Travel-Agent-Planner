@@ -4,7 +4,7 @@ from typing import Any, Dict
 from agent_framework import tool
 import requests
 
-from ..utils import normalize_sunrise_sunset
+from utils.utils import normalize_sunrise_sunset
 
 API_HTTP = "https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/"
 
