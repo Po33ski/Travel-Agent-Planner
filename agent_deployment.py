@@ -22,7 +22,7 @@ knowledge_base_name = os.getenv("KNOWLEDGE_BASE_NAME", "travel-guide-kb")
 knowledge_base_connection_name = os.getenv("KNOWLEDGE_BASE_CONNECTION_NAME", "travel-guide-kb-mcp")
 
 config_path = Path("config.yaml")
-with open(config_path, "r") as file:
+with open(config_path, "r", encoding="utf-8") as file:
     config = yaml.safe_load(file)
 
 # =============================================================================
