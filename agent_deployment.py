@@ -9,6 +9,7 @@ from azure.ai.projects.models import PromptAgentDefinition, FunctionTool, WebSea
 from azure.core.exceptions import HttpResponseError
 
 from classes.foundry_iq_services import FoundryIQService
+from rai_policies import create_or_update_rai_policy
 
 # =============================================================================
 # CONFIGURATION
@@ -20,6 +21,10 @@ llm_model_deployment_name = os.getenv("LLM_MODEL_DEPLOYMENT_NAME")
 search_endpoint = os.getenv("SEARCH_ENDPOINT")
 knowledge_base_name = os.getenv("KNOWLEDGE_BASE_NAME", "travel-guide-kb")
 knowledge_base_connection_name = os.getenv("KNOWLEDGE_BASE_CONNECTION_NAME", "travel-guide-kb-mcp")
+
+subscription_id = os.getenv("AZURE_SUBSCRIPTION_ID")
+resource_group_name = os.getenv("AZURE_RESOURCE_GROUP")
+account_name = os.getenv("AZURE_COGNITIVE_ACCOUNT_NAME")
 
 config_path = Path("config.yaml")
 with open(config_path, "r", encoding="utf-8") as file:
@@ -37,6 +42,7 @@ def create_or_update_agent(
     search_endpoint: str,
     knowledge_base_name: str,
     knowledge_base_connection_name: str,
+    rai_config: object,
 ) -> object:
     """
     Create or update a server-side agent in the Azure AI Foundry project.
@@ -48,7 +54,7 @@ def create_or_update_agent(
         search_endpoint: Azure AI Search endpoint hosting the knowledge base
         knowledge_base_name: Foundry IQ knowledge base name
         knowledge_base_connection_name: RemoteTool project connection to the knowledge base
-
+        rai_config: RAI configuration object
     Returns:
         The created or updated Agent object
     """
@@ -120,6 +126,7 @@ def create_or_update_agent(
                 model=llm_model_deployment_name,
                 instructions=system_prompt,
                 tools=[forecast_tool, current_weather_tool, web_search_tool, knowledge_base_tool],
+                rai_config=rai_config,
             ),
         )
         print(f"   ✅ Agent created or updated successfully (ID: {agent.id})")
@@ -151,6 +158,11 @@ def main() -> int:
         # Initialize client via context manager
         credential = DefaultAzureCredential()
 
+        # Create or update the RAI policy and get its rai_config to attach to the agent
+        rai_config = create_or_update_rai_policy(
+            project_client.credential, subscription_id, resource_group_name, account_name, config
+        )
+        
         with AIProjectClient(
             endpoint=project_endpoint, credential=credential
         ) as project_client:
@@ -163,6 +175,7 @@ def main() -> int:
                 search_endpoint,
                 knowledge_base_name,
                 knowledge_base_connection_name,
+                rai_config=rai_config
             )
 
         print("\n✨ Agent deployment completed successfully!")

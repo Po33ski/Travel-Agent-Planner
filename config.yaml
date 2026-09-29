@@ -84,3 +84,30 @@ system_prompt: |
 
   Bad:
   Mixing both sources in one paragraph without saying which fact comes from where.
+
+
+# Guardrails / RAI Configuration
+guardrails:
+  rai_policy_name: "StrictGuardrail" 
+
+  controls:
+    jailbreak:
+      enabled: true
+      action: "Block"
+    indirect_prompt_injections:
+      enabled: true
+      action: "Block"
+    content_harms:
+      enabled: true
+      hate: "Low" # Options: Low, Medium, High
+      sexual: "Low"
+      self_harm: "Low"
+      violence: "Low"
+      action: "Block"
+    profanity:
+      enabled: true
+      action: "Block"
+    protected_materials:
+      code: true
+      text: true
+      action: "Block"

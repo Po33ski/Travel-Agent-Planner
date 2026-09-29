@@ -7,3 +7,4 @@ agent-framework-foundry
 requests
 azure-storage-blob
 azure-search-documents>=12.1.0b2
+azure-mgmt-cognitiveservices
