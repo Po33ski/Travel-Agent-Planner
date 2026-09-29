@@ -9,7 +9,8 @@ from azure.ai.projects.models import PromptAgentDefinition, FunctionTool, WebSea
 from azure.core.exceptions import HttpResponseError
 
 from classes.foundry_iq_services import FoundryIQService
-from rai_policies import create_or_update_rai_policy
+# from rai_policies import create_or_update_rai_policy
+from classes.rai_policies_services import RaiPolicyManager
 
 # =============================================================================
 # CONFIGURATION
@@ -159,8 +160,14 @@ def main() -> int:
         credential = DefaultAzureCredential()
 
         # Create or update the RAI policy and get its rai_config to attach to the agent
-        rai_config = create_or_update_rai_policy(
-            project_client.credential, subscription_id, resource_group_name, account_name, config
+        rai_manager = RaiPolicyManager(
+            subscription_id=subscription_id,
+            resource_group_name=resource_group_name,
+            account_name=account_name,
+            credential=credential,
+        )
+        rai_config = rai_manager.create_or_update_rai_policy(
+            config
         )
         
         with AIProjectClient(
@@ -175,7 +182,7 @@ def main() -> int:
                 search_endpoint,
                 knowledge_base_name,
                 knowledge_base_connection_name,
-                rai_config=rai_config
+                rai_config
             )
 
         print("\n✨ Agent deployment completed successfully!")
