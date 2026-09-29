@@ -1,23 +1,26 @@
 import os
 import asyncio
 import logging
-from pathlib import Path
 from azure.identity import DefaultAzureCredential
-from azure.ai.projects import AIProjectClient
 from agent_framework.foundry import FoundryAgent
+from agent_framework import FunctionInvocationContext
 from classes.weather_services import get_forecast_weather, get_current_weather
 
-logging.getLogger("agent_framework").setLevel(logging.ERROR)
+# WARNING shows tool-loop problems such as "Maximum consecutive function call errors reached"
+logging.getLogger("agent_framework").setLevel(logging.WARNING)
 
 endpoint = os.getenv("PROJECT_ENDPOINT")
 agent_name = os.getenv("AGENT_NAME")
 
 credential = DefaultAzureCredential()
-project_client = AIProjectClient(endpoint=endpoint, credential=credential)
 # =============================================================================
 # AGENT INITIALIZATION
 # =============================================================================
 
+async def log_tool_calls(context: FunctionInvocationContext, call_next):
+    print(f"[TOOL] -> {context.function.name}({context.arguments})")
+    await call_next()
+    print(f"[TOOL] <- {context.function.name}: {str(context.result)[:200]}")
 
 def create_agent():
     # Pass the local implementation into tools so FoundryAgent handles execution callbacks
@@ -26,18 +29,19 @@ def create_agent():
         agent_name=agent_name,
         credential=credential,
         tools=[get_forecast_weather, get_current_weather],
+        middleware=[log_tool_calls],
     )
     return agent
 
-def extract_url_citations(result) -> list[tuple[str, str]]:
-    citations = {}
-    for message in getattr(result, "messages", None) or []:
-        for content in getattr(message, "contents", None) or []:
-            for annotation in getattr(content, "annotations", None) or []:
-                url = getattr(annotation, "url", None)
-                if url:
-                    citations[url] = getattr(annotation, "title", None) or url
-    return [(title, url) for url, title in citations.items()]
+# def extract_url_citations(result) -> list[tuple[str, str]]:
+#     citations = {}
+#     for message in getattr(result, "messages", None) or []:
+#         for content in getattr(message, "contents", None) or []:
+#             for annotation in getattr(content, "annotations", None) or []:
+#                 url = getattr(annotation, "url", None)
+#                 if url:
+#                     citations[url] = getattr(annotation, "title", None) or url
+#     return [(title, url) for url, title in citations.items()]
 
 
 async def run_agent(agent):
@@ -58,8 +62,8 @@ async def run_agent(agent):
         try:
             print("\n[AGENT] Executing pipeline...")
 
-            # When the server agent requests tool execution, FoundryAgent handles
-            # running `analyze_document_with_intelligence` locally and passing results back.
+            # When the server agent requests a function call, FoundryAgent runs the local
+            # weather tool and sends the result back; MCP and web search run server-side.
             result = await agent.run(user_message_text, session=session)
 
             final_text = getattr(result, "text", str(result))
@@ -67,15 +71,18 @@ async def run_agent(agent):
             print("ASSISTANT REPLY:")
             print("=" * 50)
             print(final_text)
-            citations = extract_url_citations(result)
-            if citations:
-                print("\nSOURCES (knowledge base / web search):")
-                for title, url in citations:
-                    print(f"- {title}: {url}")
-            print("=" * 50)
+            # citations = extract_url_citations(result)
+            # if citations:
+            #     print("\nSOURCES (knowledge base / web search):")
+            #     for title, url in citations:
+            #         print(f"- {title}: {url}")
+            # print("=" * 50)
 
         except Exception as e:
             print(f"❌ ERROR during workflow execution: {e}")
+            # The server-side conversation may now hold a function call without output, so it can't continue
+            session = await agent.create_conversation()
+            print("↻ Started a new conversation.")
 
 
 def main() -> int:

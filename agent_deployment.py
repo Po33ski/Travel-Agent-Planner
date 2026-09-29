@@ -57,15 +57,24 @@ def create_or_update_agent(
 
     print(f"🔄 Processing agent: {agent_name}")
 
+    # Parameters must match get_forecast_weather in classes/weather_services.py
     forecast_tool = FunctionTool(
         name="get_forecast_weather",
-        description="Get weather forecast for a given location and date frame.",
+        description="Get the daily weather forecast for a given location and optional date range.",
         parameters={
                 "type": "object",
                 "properties": {
                     "location": {
                         "type": "string",
                         "description": "The location for which to get weather information.",
+                    },
+                    "start_date": {
+                        "type": "string",
+                        "description": "First day in YYYY-MM-DD format. Omit both dates for the next 15 days.",
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "description": "Last day in YYYY-MM-DD format. Use only with start_date.",
                     },
             },
             "required": ["location"],

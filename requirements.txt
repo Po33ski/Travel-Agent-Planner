@@ -2,7 +2,7 @@ pyyaml
 azure-identity
 azure-ai-projects>=2.0.0
 azure-core
-agent-framework
+agent-framework>=1.13.0
 agent-framework-foundry
 requests
 azure-storage-blob
