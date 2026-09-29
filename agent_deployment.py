@@ -103,6 +103,36 @@ def create_or_update_agent(
         }
     )
 
+    # Parameters must match search_for_hotels in classes/hotel_services.py
+    hotel_search_tool = FunctionTool(
+        name="search_for_hotels",
+        description="Search booking sites (booking.com, hotels.com, tripadvisor.com) for hotels in a given city "
+        "and optional date range. Returns raw search results with prices in a single target currency.",
+        parameters={
+                "type": "object",
+                "properties": {
+                    "city": {
+                        "type": "string",
+                        "description": "The city in which to search for hotels.",
+                    },
+                    "check_in": {
+                        "type": "string",
+                        "description": "Check-in date in YYYY-MM-DD format (optional).",
+                    },
+                    "check_out": {
+                        "type": "string",
+                        "description": "Check-out date in YYYY-MM-DD format (optional). Use only with check_in.",
+                    },
+                    "language": {
+                        "type": "string",
+                        "description": "ISO 639-1 language code of the conversation, e.g. 'pl' or 'en'. "
+                        "'pl' returns prices in PLN, any other language in USD.",
+                    },
+                },
+                "required": ["city"],
+        }
+    )
+
     web_search_tool = WebSearchTool(
         user_location=WebSearchApproximateLocation(
             country="PL", city="Warsaw", region="Mazowieckie"
@@ -126,7 +156,7 @@ def create_or_update_agent(
             definition=PromptAgentDefinition(
                 model=llm_model_deployment_name,
                 instructions=system_prompt,
-                tools=[forecast_tool, current_weather_tool, web_search_tool, knowledge_base_tool],
+                tools=[forecast_tool, current_weather_tool, hotel_search_tool, web_search_tool, knowledge_base_tool],
                 rai_config=rai_config,
             ),
         )

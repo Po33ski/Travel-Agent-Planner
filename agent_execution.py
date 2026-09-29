@@ -5,6 +5,7 @@ from azure.identity import DefaultAzureCredential
 from agent_framework.foundry import FoundryAgent
 from agent_framework import FunctionInvocationContext
 from classes.weather_services import get_forecast_weather, get_current_weather
+from classes.hotel_services import search_for_hotels
 
 # WARNING shows tool-loop problems such as "Maximum consecutive function call errors reached"
 logging.getLogger("agent_framework").setLevel(logging.WARNING)
@@ -28,7 +29,7 @@ def create_agent():
         project_endpoint=endpoint,
         agent_name=agent_name,
         credential=credential,
-        tools=[get_forecast_weather, get_current_weather],
+        tools=[get_forecast_weather, get_current_weather, search_for_hotels],
         middleware=[log_tool_calls],
     )
     return agent
@@ -63,7 +64,7 @@ async def run_agent(agent):
             print("\n[AGENT] Executing pipeline...")
 
             # When the server agent requests a function call, FoundryAgent runs the local
-            # weather tool and sends the result back; MCP and web search run server-side.
+            # weather / hotel tool and sends the result back; MCP and web search run server-side.
             result = await agent.run(user_message_text, session=session)
 
             final_text = getattr(result, "text", str(result))
