@@ -4,18 +4,7 @@ An AI agent that helps you plan a trip to a chosen destination anywhere in the w
 
 A typical answer includes a weather summary for the travel dates, a day-by-day plan with citations to the travel guide, hotel suggestions with prices and booking links (when the user asks about accommodation), transport and practical tips, and packing advice based on the forecast.
 
-```mermaid
-flowchart LR
-    U[User / CLI<br/>agent_execution.py] -->|prompt| A[Foundry Agent<br/>gpt-5-mini]
-    A -->|function call| W[Weather tools<br/>run locally]
-    W -->|HTTPS| VC[Visual Crossing API]
-    A -->|function call| H[Hotel search tool<br/>runs locally]
-    H -->|HTTPS| TV[Tavily Search API<br/>booking.com, hotels.com, tripadvisor.com]
-    A -->|MCP, server-side| KB[Foundry IQ knowledge base<br/>Azure AI Search]
-    KB --> BLOB[Blob Storage<br/>travel guide]
-    A -->|server-side| WS[Web search]
-    A -.->|every prompt and completion| G[RAI policy<br/>StrictGuardrail]
-```
+![Travel Agent Planner architecture](docs/architecture.svg)
 
 ## Table of contents
 
@@ -45,6 +34,7 @@ flowchart LR
 | `utils/utils.py` | Helpers for normalising weather API responses |
 | `inputs/` | Source documents for the knowledge base (`world_city_travel_guide.md`, `.pdf`) |
 | `scripts/` | Step-by-step CLI commands for environment setup, deployment and deletion |
+| `docs/architecture.svg` | Architecture diagram shown at the top of this README |
 
 ---
 
