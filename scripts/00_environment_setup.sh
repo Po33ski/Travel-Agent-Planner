@@ -1,8 +1,8 @@
 # Create a new environment
-python -m venv tutorials
+python -m venv travelagent
 
 # Identify the new environment's Python executable path
-tutorials\Scripts\activate
+travelagent\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt

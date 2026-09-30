@@ -1,14 +1,16 @@
 # Travel Agent Planner
 
-An AI agent that helps you plan a trip to a chosen destination anywhere in the world. The agent runs server-side in **Azure AI Foundry Agent Service**. It uses **Foundry IQ** as a RAG knowledge base: a travel guide covering 182 cities in Europe, Asia and the Americas, indexed with Azure AI Search. It also calls helper functions that fetch **weather data** from the Visual Crossing API. Web search is a fallback for anything the knowledge base does not cover, such as visa requirements or current events.
+An AI agent that helps you plan a trip to a chosen destination anywhere in the world. The agent runs server-side in **Azure AI Foundry Agent Service**. It uses **Foundry IQ** as a RAG knowledge base: a travel guide covering 182 cities in Europe, Asia and the Americas, indexed with Azure AI Search. It also calls helper functions that fetch **weather data** from the Visual Crossing API and **search for hotels** on booking sites through the Tavily Search API. Web search is a fallback for anything the knowledge base does not cover, such as visa requirements or current events.
 
-A typical answer includes a weather summary for the travel dates, a day-by-day plan with citations to the travel guide, transport and practical tips, and packing advice based on the forecast.
+A typical answer includes a weather summary for the travel dates, a day-by-day plan with citations to the travel guide, hotel suggestions with prices and booking links (when the user asks about accommodation), transport and practical tips, and packing advice based on the forecast.
 
 ```mermaid
 flowchart LR
     U[User / CLI<br/>agent_execution.py] -->|prompt| A[Foundry Agent<br/>gpt-5-mini]
     A -->|function call| W[Weather tools<br/>run locally]
     W -->|HTTPS| VC[Visual Crossing API]
+    A -->|function call| H[Hotel search tool<br/>runs locally]
+    H -->|HTTPS| TV[Tavily Search API<br/>booking.com, hotels.com, tripadvisor.com]
     A -->|MCP, server-side| KB[Foundry IQ knowledge base<br/>Azure AI Search]
     KB --> BLOB[Blob Storage<br/>travel guide]
     A -->|server-side| WS[Web search]
@@ -34,10 +36,11 @@ flowchart LR
 | `resource_deployment.bicep` | Azure infrastructure: Foundry resource and project, model deployments, AI Search, Storage, knowledge base connection and role assignments |
 | `rag_setup.py` | Uploads the travel guide and builds the Foundry IQ knowledge source and knowledge base |
 | `agent_deployment.py` | Creates or updates the RAI policy and the server-side agent (system prompt and tools) |
-| `agent_execution.py` | Interactive command-line chat with the deployed agent; runs the weather tools locally |
+| `agent_execution.py` | Interactive command-line chat with the deployed agent; runs the weather and hotel search tools locally |
 | `config.yaml` | Agent name, system prompt and guardrail (RAI) settings |
 | `classes/foundry_iq_services.py` | `FoundryIQService`: blob upload, knowledge source, ingestion, knowledge base, MCP tool |
 | `classes/weather_services.py` | `WeatherService` and the `get_forecast_weather` / `get_current_weather` tools |
+| `classes/hotel_services.py` | `HotelService` (Tavily client) and the `search_for_hotels` tool |
 | `classes/rai_policies_services.py` | `RaiPolicyManager`: builds and deploys the RAI policy from `config.yaml` |
 | `utils/utils.py` | Helpers for normalising weather API responses |
 | `inputs/` | Source documents for the knowledge base (`world_city_travel_guide.md`, `.pdf`) |
@@ -53,6 +56,7 @@ flowchart LR
 - [Azure CLI](https://aka.ms/installazurecli) with Bicep
 - An Azure subscription where you can create resource groups and role assignments (for example, Owner)
 - A [Visual Crossing](https://www.visualcrossing.com/weather-api) API key for weather data
+- A [Tavily](https://tavily.com) API key for hotel search
 
 > The commands in `scripts/*.sh` use PowerShell line continuation (`` ` ``). Run them in PowerShell, or replace the backticks with `\` in bash.
 
@@ -99,12 +103,14 @@ The Bicep template never outputs keys. Get them with the CLI and put them **only
 ```powershell
 # STORAGE_CONNECTION_STRING: the Search indexer reads the blob container
 az storage account show-connection-string `
-  --resource-group <resource-group> --name <storage-account-name> `
+  --resource-group <resource-group> 
+  --name <storage-account-name> `
   --query connectionString -o tsv
 
 # AOAI_API_KEY: Search calls the embedding and chat models
 az cognitiveservices account keys list `
-  --resource-group <resource-group> --name <foundry-resource-name> `
+  --resource-group <resource-group> 
+  --name <foundry-resource-name> `
   --query key1 -o tsv
 ```
 
@@ -138,6 +144,7 @@ AGENT_NAME=travelAgent
 STORAGE_CONNECTION_STRING=<from step 4>
 AOAI_API_KEY=<from step 4>
 VISUAL_CROSSING_API_KEY=<your Visual Crossing key>
+TAVILY_API_KEY=<your Tavily key>
 ```
 
 ### 6. Build the knowledge base
@@ -168,6 +175,12 @@ Example prompt:
 
 ```text
 I'm going to Lisbon from 2026-10-12 to 2026-10-15 on a medium budget. I like food and museums. Can you plan my trip?
+```
+
+Example prompt with hotel search:
+
+```text
+I'm going to Lisbon from 2026-10-12 to 2026-10-15. Can you suggest a few hotels near the city centre?
 ```
 
 ---
@@ -231,12 +244,12 @@ The agent, `travelAgent`, is a **prompt agent** (`PromptAgentDefinition`) hosted
 
 1. Reads `config.yaml` (agent name, system prompt, guardrails).
 2. Creates or updates the RAI policy through `RaiPolicyManager` and gets a `RaiConfig` back.
-3. Defines the four tools (see [Tools](#tools)).
+3. Defines the five tools (see [Tools](#tools)).
 4. Calls `project_client.agents.create_version(...)`, which creates a new agent version with the instructions, tools and RAI config.
 
 ### Execution (`agent_execution.py`)
 
-The client uses the Microsoft Agent Framework (`agent_framework.foundry.FoundryAgent`). It connects to the existing server-side agent by name and passes in the local Python implementations of the weather tools. When the server-side agent requests a function call, `FoundryAgent` runs the local function and sends the result back. The MCP knowledge base and web search tools run entirely server-side.
+The client uses the Microsoft Agent Framework (`agent_framework.foundry.FoundryAgent`). It connects to the existing server-side agent by name and passes in the local Python implementations of the weather and hotel search tools. When the server-side agent requests a function call, `FoundryAgent` runs the local function and sends the result back. The MCP knowledge base and web search tools run entirely server-side.
 
 - Conversations persist across turns (`agent.create_conversation()`), so the agent remembers earlier messages.
 - The `log_tool_calls` middleware prints every function call and a truncated result.
@@ -250,10 +263,11 @@ The system prompt sets the following rules:
 - **Knowledge base first.** Always call `knowledge_base_retrieve` for cities, attractions, restaurants, events, transport and practical tips. Use only passages about the requested destination.
 - **Web search as a fallback** for gaps such as visa requirements and current events. Label clearly which facts come from the knowledge base and which from web search.
 - **Weather is mandatory** whenever a destination is mentioned. Report max/min temperature, precipitation probability, wind speed and conditions for each day, and base packing tips on the actual data.
+- **Hotels only from `search_for_hotels`.** When the user asks about accommodation, the agent always calls `search_for_hotels` and never uses web search for hotels. It recommends 3–5 hotels, preferring single-hotel pages, with name, price per night, rating, highlights and the exact booking link from the results. Prices are shown only in the currency returned by the tool (PLN or USD), never converted. A missing price is reported as *"price not available"*.
 - **Citations.** Every knowledge base fact carries the exact source marker returned by the tool. The agent never creates citation markers itself.
-- **Answer structure.** Weather summary, then the (day-by-day) plan, then transport and practical tips, then an optional follow-up offer. Maximum 500 words.
+- **Answer structure.** Weather summary, then the (day-by-day) plan, then accommodation (only when hotels were searched), then transport and practical tips, then an optional follow-up offer. Maximum 500 words.
 
-The prompt ends with good and bad examples for citations, missing information, weather reporting and mixed sources.
+The prompt ends with good and bad examples for citations, missing information, weather reporting, mixed sources and hotel reporting.
 
 ---
 
@@ -265,6 +279,7 @@ The prompt ends with good and bad examples for citations, missing information, w
 | `web_search` | Built-in `WebSearchTool` | Server-side | Fallback for information missing from the knowledge base |
 | `get_forecast_weather` | `FunctionTool` | Locally, in `agent_execution.py` | Daily forecast for a location and date range |
 | `get_current_weather` | `FunctionTool` | Locally, in `agent_execution.py` | Current weather conditions |
+| `search_for_hotels` | `FunctionTool` | Locally, in `agent_execution.py` | Hotel search on booking sites via Tavily |
 
 ### Foundry IQ knowledge base (`knowledge_base_retrieve`)
 
@@ -291,7 +306,53 @@ Both tools call the [Visual Crossing Timeline API](https://www.visualcrossing.co
 
 Sunrise and sunset times are shortened to `HH:MM` (`utils/utils.py`). Errors never raise exceptions. They come back as `{"error": "..."}`, for example for an unknown city, an invalid date, a timeout or a missing API key, so the agent can react to them in its answer.
 
-The tool schemas are defined twice. `agent_deployment.py` holds the `FunctionTool` JSON schema for the server-side agent, and `weather_services.py` holds the `@tool` Python implementation for the client. **Keep the parameter names in sync.**
+### Hotel search tool (`classes/hotel_services.py`)
+
+Hotel search uses the [Tavily Search API](https://docs.tavily.com) (`tavily-python`) with the `TAVILY_API_KEY` environment variable. `HotelService` creates a `TavilyClient` in its constructor, and its `search_hotels()` method runs the search. The `search_for_hotels` tool is a thin wrapper that reads the API key, creates the service and returns its result.
+
+**`search_for_hotels(city, check_in=None, check_out=None, language="en")`**
+
+| Parameter | Required | Description |
+|---|---|---|
+| `city` | Yes | City to search for hotels in |
+| `check_in` | No | Check-in date, `YYYY-MM-DD` |
+| `check_out` | No | Check-out date, `YYYY-MM-DD`. Use only with `check_in` |
+| `language` | No | ISO 639-1 code of the conversation language. `pl` returns prices in PLN, any other value in USD |
+
+How it works:
+
+1. **Target currency.** `language` decides the single currency used for the whole search: `pl` → PLN, anything else → USD.
+2. **Query.** The query is built in the matching language, for example `hotele Kraków check-in 2026-10-10 check-out 2026-10-12 cena za noc w złotówkach opinie rezerwacja` for PLN, or `hotels in Lisbon ... price per night USD rating reviews booking` for USD.
+3. **Search.** Tavily runs an `advanced` search limited to `booking.com`, `hotels.com` and `tripadvisor.com`, with up to 8 results and a country filter matching the currency (Poland or United States).
+4. **Post-processing.**
+   - booking.com links get `selected_currency` and `lang` query parameters, so the booking page shows the same currency as the search results.
+   - Each result is marked `is_direct: true` when its URL points at a single hotel's page (`/hotel/...`, excluding `/reviews/` pages). Direct pages are sorted first, because they are more useful than city or category overview pages.
+
+Example result:
+
+```json
+{
+  "city": "Kraków",
+  "check_in": "2026-10-10",
+  "check_out": "2026-10-12",
+  "target_currency": "PLN",
+  "results": [
+    {
+      "url": "https://www.booking.com/hotel/pl/...html?selected_currency=PLN&lang=pl",
+      "title": "...",
+      "content": "...",
+      "score": 0.87,
+      "is_direct": true
+    }
+  ]
+}
+```
+
+The tool returns raw page snippets (`title`, `content`), not structured hotel data. The agent extracts the hotel name, price, rating and highlights from them, following the hotel reporting rules in the system prompt. As with the weather tools, errors never raise exceptions. A missing city, a missing API key, no results or a failed Tavily call come back as `{"error": "..."}`.
+
+### Keeping tool schemas in sync
+
+The function tool schemas are defined twice. `agent_deployment.py` holds the `FunctionTool` JSON schemas for the server-side agent, and `weather_services.py` / `hotel_services.py` hold the `@tool` Python implementations for the client. **Keep the tool and parameter names in sync.**
 
 ---
 
