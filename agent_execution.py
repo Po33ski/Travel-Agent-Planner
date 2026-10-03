@@ -29,7 +29,7 @@ def create_agent():
         project_endpoint=endpoint,
         agent_name=agent_name,
         credential=credential,
-        tools=[get_forecast_weather, get_current_weather, search_for_hotels],
+        tools=[get_forecast_weather, search_for_hotels],
         middleware=[log_tool_calls],
     )
     return agent

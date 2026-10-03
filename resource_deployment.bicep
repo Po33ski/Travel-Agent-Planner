@@ -164,6 +164,7 @@ var knowledgeBaseMcpEndpoint = 'https://${searchService.name}.search.windows.net
 
 // Key-based MCP connection: the agent sends the Search query key (read-only) in the api-key header.
 // The key is read from the search service during deployment, so it never appears in code or outputs.
+// In the real production, the better approach is to use managed identidy auethentication
 resource kbConnection 'Microsoft.CognitiveServices/accounts/projects/connections@2025-10-01-preview' = {
   parent: aiProject
   name: knowledgeBaseConnectionName

@@ -73,7 +73,7 @@ def create_or_update_agent(
                 "properties": {
                     "location": {
                         "type": "string",
-                        "description": "The location for which to get weather information.",
+                        "description": "City name. The location for which to get weather information.",
                     },
                     "start_date": {
                         "type": "string",
@@ -88,20 +88,20 @@ def create_or_update_agent(
         }
     )
 
-    current_weather_tool = FunctionTool(
-        name="get_current_weather",
-        description="Get current weather for a given location.",
-        parameters={
-                "type": "object",
-                "properties": {
-                    "location": {
-                        "type": "string",
-                        "description": "The location for which to get current weather information.",
-                    },
-                },
-                "required": ["location"],
-        }
-    )
+    # current_weather_tool = FunctionTool(
+    #     name="get_current_weather",
+    #     description="Get current weather for a given location.",
+    #     parameters={
+    #             "type": "object",
+    #             "properties": {
+    #                 "location": {
+    #                     "type": "string",
+    #                     "description": "City name. The location for which to get current weather information.",
+    #                 },
+    #             },
+    #             "required": ["location"],
+    #     }
+    # )
 
     # Parameters must match search_for_hotels in classes/hotel_services.py
     hotel_search_tool = FunctionTool(
@@ -156,7 +156,7 @@ def create_or_update_agent(
             definition=PromptAgentDefinition(
                 model=llm_model_deployment_name,
                 instructions=system_prompt,
-                tools=[forecast_tool, current_weather_tool, hotel_search_tool, web_search_tool, knowledge_base_tool],
+                tools=[forecast_tool, hotel_search_tool, web_search_tool, knowledge_base_tool],
                 rai_config=rai_config,
             ),
         )
