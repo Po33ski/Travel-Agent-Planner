@@ -228,7 +228,7 @@ Role assignments for a fully managed-identity setup (Search → Storage, Search 
 
 ## The agent
 
-The agent, `travelAgent`, is a **prompt agent** (`PromptAgentDefinition`) hosted in Azure AI Foundry Agent Service. It uses the `gpt-5-mini` deployment.
+The agent, `travelAgent`, is a **prompt agent** (`PromptAgentDefinition`) hosted in Azure AI Foundry Agent Service. It uses the `gpt-5-mini` deployment. For better reasoning you can change the model to 'gpt-5.5' but remember that the cost and reasoning time will be increased.
 
 ### Deployment (`agent_deployment.py`)
 
