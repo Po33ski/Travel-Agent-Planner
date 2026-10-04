@@ -6,12 +6,16 @@ from agent_framework.foundry import FoundryAgent
 from agent_framework import FunctionInvocationContext
 from classes.weather_services import get_forecast_weather, get_current_weather
 from classes.hotel_services import search_for_hotels
+from classes.speech_services import text_to_speech
+
 
 # WARNING shows tool-loop problems such as "Maximum consecutive function call errors reached"
 logging.getLogger("agent_framework").setLevel(logging.WARNING)
 
 endpoint = os.getenv("PROJECT_ENDPOINT")
 agent_name = os.getenv("AGENT_NAME")
+resolved_key = os.getenv("SPEECH_KEY")
+resolved_region = os.getenv("SPEECH_REGION")
 
 credential = DefaultAzureCredential()
 # =============================================================================
@@ -33,6 +37,7 @@ def create_agent():
         middleware=[log_tool_calls],
     )
     return agent
+
 
 # def extract_url_citations(result) -> list[tuple[str, str]]:
 #     citations = {}
@@ -72,12 +77,13 @@ async def run_agent(agent):
             print("ASSISTANT REPLY:")
             print("=" * 50)
             print(final_text)
-            # citations = extract_url_citations(result)
-            # if citations:
-            #     print("\nSOURCES (knowledge base / web search):")
-            #     for title, url in citations:
-            #         print(f"- {title}: {url}")
-            # print("=" * 50)
+
+            speech_result = text_to_speech(final_text)
+            print("\n" + "=" * 50)
+            print("SPEECH SYNTHESIS RESULT:")
+            print(f"\n[SPEECH] {speech_result}")
+            print("=" * 50)
+
 
         except Exception as e:
             print(f"❌ ERROR during workflow execution: {e}")

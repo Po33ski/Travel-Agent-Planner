@@ -15,6 +15,7 @@ param knowledgeBaseConnectionName string = '${knowledgeBaseName}-mcp'
 // Object ID of the user who runs rag_setup.py: az ad signed-in-user show --query id -o tsv
 param userPrincipalId string
 param location string = resourceGroup().location
+param speechName string = '${projectPrefix}-speech'
 
 var knowledgeBaseApiVersion = '2026-08-01-preview'
 
@@ -182,6 +183,25 @@ resource kbConnection 'Microsoft.CognitiveServices/accounts/projects/connections
   }
 }
 
+/*
+  Azure AI Speech service for speech-to-text, text-to-speech, and speech translation
+*/
+resource speech 'Microsoft.CognitiveServices/accounts@2026-05-01' = {
+  name: speechName
+  location: location
+  identity: {
+    type: 'SystemAssigned'
+  }
+  sku: {
+    name: 'F0'
+  }
+  kind: 'SpeechServices'
+  properties: {
+    customSubDomainName: speechName
+    disableLocalAuth: false
+  }
+}
+
 // ------------------------------------------------------------------ role assignments: service → service
 // Search reads documents from the blob container
 // roles asigned to the search service's managed identity, allowing it to read blob data from the storage account. 
@@ -266,3 +286,5 @@ output aiFoundryName string = aiFoundry.name
 output blobContainerName string = container.name
 output knowledgeBaseName string = knowledgeBaseName
 output knowledgeBaseConnectionName string = kbConnection.name
+output speech_region string = location
+output speech_key string = speech.listKeys().key1
