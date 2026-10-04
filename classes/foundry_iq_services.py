@@ -157,7 +157,7 @@ class FoundryIQService:
                 ingestion_parameters=KnowledgeSourceIngestionParameters(
                     chat_completion_model=KnowledgeBaseAzureOpenAIModel(azure_open_ai_parameters=self._chat),
                     embedding_model=KnowledgeSourceAzureOpenAIVectorizer(azure_open_ai_parameters=self._embedding),
-                    content_extraction_mode=KnowledgeSourceContentExtractionMode.MINIMAL,
+                    content_extraction_mode=KnowledgeSourceContentExtractionMode.MINIMAL,  # text-only documents, no OCR
                     disable_image_verbalization=False,  # text-only documents
                 ),
             ),

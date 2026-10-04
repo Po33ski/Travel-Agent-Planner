@@ -81,7 +81,7 @@ async def run_agent(agent):
             speech_result = text_to_speech(final_text)
             print("\n" + "=" * 50)
             print("SPEECH SYNTHESIS RESULT:")
-            print(f"\n[SPEECH] {speech_result}")
+            print(f"\n[SPEECH] {str(speech_result)}")
             print("=" * 50)
 
 

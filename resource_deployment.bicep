@@ -199,6 +199,7 @@ resource speech 'Microsoft.CognitiveServices/accounts@2026-05-01' = {
   properties: {
     customSubDomainName: speechName
     disableLocalAuth: false
+  
   }
 }
 
