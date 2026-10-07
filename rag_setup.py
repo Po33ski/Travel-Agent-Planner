@@ -17,7 +17,7 @@ search_endpoint = os.getenv("SEARCH_ENDPOINT")
 storage_account_url = os.getenv("STORAGE_ACCOUNT_URL")
 blob_container_name = os.getenv("BLOB_CONTAINER_NAME", "travel-guide")
 aoai_endpoint = os.getenv("AOAI_ENDPOINT")
-llm_model_deployment_name = os.getenv("LLM_MODEL_DEPLOYMENT_NAME")
+llm_model_deployment_name = os.getenv("LLM_MINI_MODEL_DEPLOYMENT_NAME")
 embedding_model_deployment_name = os.getenv("EMBEDDING_MODEL_DEPLOYMENT_NAME")
 knowledge_base_name = os.getenv("KNOWLEDGE_BASE_NAME", "travel-guide-kb")
 knowledge_source_name = os.getenv("KNOWLEDGE_SOURCE_NAME", "travel-guide-ks")
@@ -36,7 +36,7 @@ REQUIRED_SETTINGS = {
     "SEARCH_ENDPOINT": search_endpoint,
     "STORAGE_ACCOUNT_URL": storage_account_url,
     "AOAI_ENDPOINT": aoai_endpoint,
-    "LLM_MODEL_DEPLOYMENT_NAME": llm_model_deployment_name,
+    "LLM_MINI_MODEL_DEPLOYMENT_NAME": llm_model_deployment_name,
     "EMBEDDING_MODEL_DEPLOYMENT_NAME": embedding_model_deployment_name,
     "SOURCE_FILE_PATH": source_file_path,
     "STORAGE_CONNECTION_STRING": storage_connection_string,

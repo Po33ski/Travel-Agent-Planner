@@ -4,6 +4,7 @@ param projectPrefix string
 param aiFoundryName string = projectPrefix
 param aiProjectName string = '${aiFoundryName}-proj'
 param llmModelDeploymentName string = '${projectPrefix}-llm-deploy'
+param llmMiniModelDeploymentName string = '${projectPrefix}-llm-mini-deploy'
 param embeddingModelDeploymentName string = '${projectPrefix}-embedding-deploy'
 param aiSearchName string = '${projectPrefix}-aisearch'
 // Storage account names: 3-24 lowercase letters and digits, globally unique
@@ -81,7 +82,7 @@ resource llmModelDeployment 'Microsoft.CognitiveServices/accounts/deployments@20
     aiProject
   ]
   sku : {
-    capacity: 50 // Rate limit in thousands of tokens per minute (50 = 50K TPM).
+    capacity: 100 // Rate limit in thousands of tokens per minute (50 = 50K TPM).
     name: 'GlobalStandard'
   }
   properties: {
@@ -95,12 +96,12 @@ resource llmModelDeployment 'Microsoft.CognitiveServices/accounts/deployments@20
 
 resource llmMiniModelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2026-05-01'= {
   parent: aiFoundry
-  name: llmModelDeploymentName
+  name: llmMiniModelDeploymentName
   dependsOn: [
     llmModelDeployment  // Explicitly wait for LLM to finish first
   ]
   sku : {
-    capacity: 50 // Rate limit in thousands of tokens per minute (50 = 50K TPM).
+    capacity: 100 // Rate limit in thousands of tokens per minute (50 = 50K TPM).
     name: 'GlobalStandard'
   }
   properties: {

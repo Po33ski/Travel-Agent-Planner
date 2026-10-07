@@ -46,7 +46,7 @@ class AzureSpeechService:
         if not self.speech_client:
             return "ERROR: Speech service is not configured."
 
-        output_audio_path = "outputs/audo_file.wav"
+        output_audio_path = "outputs/audio_file.wav"
         print(f"[SPEECH TTS] Synthesizing text to file: '{output_audio_path}'")
 
         try:

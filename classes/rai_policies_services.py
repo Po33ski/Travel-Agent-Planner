@@ -1,8 +1,3 @@
-import os
-import sys
-import yaml
-from pathlib import Path
-
 from azure.identity import DefaultAzureCredential
 from azure.ai.projects.models import RaiConfig
 

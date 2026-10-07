@@ -5,7 +5,7 @@ from azure.identity import DefaultAzureCredential
 from agent_framework.foundry import FoundryAgent
 from agent_framework.orchestrations import MagenticBuilder
 from agent_framework import FunctionInvocationContext
-from classes.weather_services import get_forecast_weather, get_current_weather
+from classes.weather_services import get_forecast_weather
 from classes.hotel_services import search_for_hotels
 from classes.speech_services import text_to_speech
 

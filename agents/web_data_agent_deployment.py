@@ -19,7 +19,8 @@ from classes.rai_policies_services import RaiPolicyManager
 # =============================================================================
 
 project_endpoint = os.getenv("PROJECT_ENDPOINT")
-llm_model_deployment_name = os.getenv("LLM_MODEL_DEPLOYMENT_NAME")
+# Specialist agents use the smaller model; only the manager uses LLM_MODEL_DEPLOYMENT_NAME
+llm_model_deployment_name = os.getenv("LLM_MINI_MODEL_DEPLOYMENT_NAME")
 
 subscription_id = os.getenv("AZURE_SUBSCRIPTION_ID")
 resource_group_name = os.getenv("AZURE_RESOURCE_GROUP")
