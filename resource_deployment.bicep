@@ -86,6 +86,25 @@ resource llmModelDeployment 'Microsoft.CognitiveServices/accounts/deployments@20
   }
   properties: {
     model:{
+      name: 'gpt-5.6-luna'
+      format: 'OpenAI'
+      version: '2026-07-09'
+    }
+  }
+}
+
+resource llmMiniModelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2026-05-01'= {
+  parent: aiFoundry
+  name: llmModelDeploymentName
+  dependsOn: [
+    llmModelDeployment  // Explicitly wait for LLM to finish first
+  ]
+  sku : {
+    capacity: 50 // Rate limit in thousands of tokens per minute (50 = 50K TPM).
+    name: 'GlobalStandard'
+  }
+  properties: {
+    model:{
       name: 'gpt-5-mini'
       format: 'OpenAI'
       version: '2025-08-07'
@@ -99,7 +118,7 @@ resource embeddingModelDeployment 'Microsoft.CognitiveServices/accounts/deployme
   parent: aiFoundry
   name: embeddingModelDeploymentName
   dependsOn: [
-    llmModelDeployment  // Explicitly wait for LLM to finish first
+    llmMiniModelDeployment  // Explicitly wait for LLM to finish first
   ]
   sku : {
     capacity: 50 // 50K TPM, enough for the indexer to vectorise documents without constant throttling
@@ -278,6 +297,7 @@ resource userToSearchData 'Microsoft.Authorization/roleAssignments@2022-04-01' =
 output projectEndpoint string = 'https://${aiFoundry.properties.customSubDomainName}.services.ai.azure.com/api/projects/${aiProject.name}'
 output aoaiEndpoint string = 'https://${aiFoundry.properties.customSubDomainName}.openai.azure.com'
 output llmModelDeploymentName string = llmModelDeployment.name
+output llmMiniModelDeploymentName string = llmMiniModelDeployment.name
 output embeddingModelDeploymentName string = embeddingModelDeployment.name
 output searchEndpoint string = 'https://${searchService.name}.search.windows.net'
 output storageAccountUrl string = storage.properties.primaryEndpoints.blob
