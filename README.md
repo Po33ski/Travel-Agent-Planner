@@ -1,6 +1,6 @@
 # Travel Agent Planner
 
-An AI agent that helps you plan a trip to a chosen destination anywhere in the world. The agent runs server-side in **Azure AI Foundry Agent Service**. It uses **Foundry IQ** as a RAG knowledge base: a travel guide covering 182 cities in Europe, Asia and the Americas, indexed with Azure AI Search. It also calls helper functions that fetch **weather data** from the Visual Crossing API and **search for hotels** on booking sites through the Tavily Search API. Web search is a fallback for anything the knowledge base does not cover, such as visa requirements or current events.
+An AI agent that helps you plan a trip to a chosen destination anywhere in the world. The agent runs server-side in **Azure AI Foundry Agent Service**. It uses **Foundry IQ** as a RAG knowledge base: a travel guide covering 182 cities in Europe, Asia and the Americas, indexed with Azure AI Search. It also calls helper functions that fetch **weather data** from the Visual Crossing API and **search for hotels** on booking sites through the Tavily Search API. Web search is a fallback for anything the knowledge base does not cover, such as visa requirements or current events. Every reply is also converted to an audio file with **Azure AI Speech**, so a complete application can use it as spoken output.
 
 A typical answer includes a weather summary for the travel dates, a day-by-day plan with citations to the travel guide, hotel suggestions with prices and booking links (when the user asks about accommodation), transport and practical tips, and packing advice based on the forecast.
 
@@ -13,8 +13,9 @@ A typical answer includes a weather summary for the travel dates, a day-by-day p
 3. [Infrastructure: `resource_deployment.bicep`](#infrastructure-resource_deploymentbicep)
 4. [The agent](#the-agent)
 5. [Tools](#tools)
-6. [Guardrail configuration: `StrictGuardrail`](#guardrail-configuration-strictguardrail)
-7. [Clean-up](#clean-up)
+6. [Speech output: `AzureSpeechService`](#speech-output-azurespeechservice)
+7. [Guardrail configuration: `StrictGuardrail`](#guardrail-configuration-strictguardrail)
+8. [Clean-up](#clean-up)
 
 ---
 
@@ -22,17 +23,19 @@ A typical answer includes a weather summary for the travel dates, a day-by-day p
 
 | Path | Purpose |
 |---|---|
-| `resource_deployment.bicep` | Azure infrastructure: Foundry resource and project, model deployments, AI Search, Storage, knowledge base connection and role assignments |
+| `resource_deployment.bicep` | Azure infrastructure: Foundry resource and project, model deployments, AI Search, Storage, AI Speech, knowledge base connection and role assignments |
 | `rag_setup.py` | Uploads the travel guide and builds the Foundry IQ knowledge source and knowledge base |
 | `agent_deployment.py` | Creates or updates the RAI policy and the server-side agent (system prompt and tools) |
-| `agent_execution.py` | Interactive command-line chat with the deployed agent; runs the weather and hotel search tools locally |
+| `agent_execution.py` | Interactive command-line chat with the deployed agent; runs the weather and hotel search tools locally and converts each reply to speech |
 | `config.yaml` | Agent name, system prompt and guardrail (RAI) settings |
 | `classes/foundry_iq_services.py` | `FoundryIQService`: blob upload, knowledge source, ingestion, knowledge base, MCP tool |
-| `classes/weather_services.py` | `WeatherService` and the `get_forecast_weather` / `get_current_weather` tools |
+| `classes/weather_services.py` | `WeatherService` and the `get_forecast_weather` tool |
 | `classes/hotel_services.py` | `HotelService` (Tavily client) and the `search_for_hotels` tool |
+| `classes/speech_services.py` | `AzureSpeechService` (text-to-speech and speech-to-text) and the `text_to_speech` helper |
 | `classes/rai_policies_services.py` | `RaiPolicyManager`: builds and deploys the RAI policy from `config.yaml` |
 | `utils/utils.py` | Helpers for normalising weather API responses |
 | `inputs/` | Source documents for the knowledge base (`world_city_travel_guide.md`, `.pdf`) |
+| `outputs/` | Audio file with the spoken version of the agent's latest reply (`audio_file.wav`). Git-ignored; created on the first reply |
 | `scripts/` | Step-by-step CLI commands for environment setup, deployment and deletion |
 | `docs/architecture.svg` | Architecture diagram shown at the top of this README |
 
@@ -86,21 +89,27 @@ az deployment group show `
   --query properties.outputs
 ```
 
-### 4. Retrieve the keys used by Azure AI Search
+### 4. Retrieve the keys
 
 The Bicep template never outputs keys. Get them with the CLI and put them **only** in your local `.env` file:
 
 ```powershell
 # STORAGE_CONNECTION_STRING: the Search indexer reads the blob container
 az storage account show-connection-string `
-  --resource-group <resource-group> 
+  --resource-group <resource-group> `
   --name <storage-account-name> `
   --query connectionString -o tsv
 
 # AOAI_API_KEY: Search calls the embedding and chat models
 az cognitiveservices account keys list `
-  --resource-group <resource-group> 
+  --resource-group <resource-group> `
   --name <foundry-resource-name> `
+  --query key1 -o tsv
+
+# SPEECH_KEY: the client synthesizes the agent's replies to audio
+az cognitiveservices account keys list `
+  --resource-group <resource-group> `
+  --name <speech-resource-name> `
   --query key1 -o tsv
 ```
 
@@ -130,12 +139,18 @@ AZURE_COGNITIVE_ACCOUNT_NAME=<foundry-resource-name>
 # --- Agent runtime (must match agent_name in config.yaml) ---
 AGENT_NAME=travelAgent
 
+# --- Azure AI Speech (speech_region from the Bicep outputs) ---
+SPEECH_REGION=<region of the resource group, for example swedencentral>
+
 # --- Secrets (never commit) ---
 STORAGE_CONNECTION_STRING=<from step 4>
 AOAI_API_KEY=<from step 4>
 VISUAL_CROSSING_API_KEY=<your Visual Crossing key>
 TAVILY_API_KEY=<your Tavily key>
+SPEECH_KEY=<from step 4>
 ```
+
+`SPEECH_REGION` must be the exact Azure region name. A typo makes speech synthesis fail with a DNS error, because the region is part of the service hostname.
 
 ### 6. Build the knowledge base
 
@@ -160,6 +175,8 @@ python agent_execution.py
 ```
 
 Type your questions at the `You:` prompt. Type `exit` or `quit`, or press `Ctrl+C`, to end the session. Every tool call is logged as `[TOOL] -> ...` / `[TOOL] <- ...`.
+
+After each reply the client also saves a spoken version of it to `outputs/audio_file.wav` and prints the result under `SPEECH SYNTHESIS RESULT` (see [Speech output](#speech-output-azurespeechservice)).
 
 Example prompt:
 
@@ -195,6 +212,7 @@ The template is based on the [Foundry basic setup sample](https://github.com/mic
 | `knowledgeBaseName` | `travel-guide-kb` | Must match the knowledge base created by `rag_setup.py` |
 | `knowledgeBaseConnectionName` | `<knowledgeBaseName>-mcp` | Project connection used by the agent's MCP tool |
 | `location` | resource group location | Azure region for all resources |
+| `speechName` | `<prefix>-speech` | Azure AI Speech resource name and custom subdomain |
 
 ### Resources
 
@@ -207,6 +225,7 @@ The template is based on the [Foundry basic setup sample](https://github.com/mic
 | **Azure AI Search** | `free` SKU, semantic ranker `free` (required by agentic retrieval). Accepts both Entra ID (for the user) and API keys (for services). |
 | **Storage account + blob container** | `StorageV2`, `Standard_LRS`, TLS 1.2, no public blob access. Shared-key access is enabled because the Search indexer reads the container with the account key. |
 | **Knowledge base connection** (`RemoteTool`, `CustomKeys`) | Project connection pointing at the knowledge base MCP endpoint (`.../knowledgebases/<kb>/mcp`). It stores the read-only Search **query key**, which is read from the search service at deployment time, so the key never appears in code or outputs. It can be created before the knowledge base exists. |
+| **Azure AI Speech** (`Microsoft.CognitiveServices/accounts`, kind `SpeechServices`, SKU `F0`) | Free tier, system-assigned identity, custom subdomain. Local (key) auth stays enabled because the client authenticates with `SPEECH_KEY`. Used by `agent_execution.py` to turn the agent's replies into audio. |
 
 ### Authentication model
 
@@ -222,7 +241,7 @@ Role assignments for a fully managed-identity setup (Search → Storage, Search 
 
 ### Outputs
 
-`projectEndpoint`, `aoaiEndpoint`, `llmModelDeploymentName`, `embeddingModelDeploymentName`, `searchEndpoint`, `storageAccountUrl`, `storageAccountName`, `aiFoundryName`, `blobContainerName`, `knowledgeBaseName`, `knowledgeBaseConnectionName`. These feed the environment variables above. Keys are never output.
+`projectEndpoint`, `aoaiEndpoint`, `llmModelDeploymentName`, `embeddingModelDeploymentName`, `searchEndpoint`, `storageAccountUrl`, `storageAccountName`, `aiFoundryName`, `blobContainerName`, `knowledgeBaseName`, `knowledgeBaseConnectionName`, `speechName`, `speech_region`. These feed the environment variables above. Keys are never output.
 
 ---
 
@@ -234,16 +253,17 @@ The agent, `travelAgent`, is a **prompt agent** (`PromptAgentDefinition`) hosted
 
 1. Reads `config.yaml` (agent name, system prompt, guardrails).
 2. Creates or updates the RAI policy through `RaiPolicyManager` and gets a `RaiConfig` back.
-3. Defines the five tools (see [Tools](#tools)).
+3. Defines the four tools (see [Tools](#tools)).
 4. Calls `project_client.agents.create_version(...)`, which creates a new agent version with the instructions, tools and RAI config.
 
 ### Execution (`agent_execution.py`)
 
-The client uses the Microsoft Agent Framework (`agent_framework.foundry.FoundryAgent`). It connects to the existing server-side agent by name and passes in the local Python implementations of the weather and hotel search tools. When the server-side agent requests a function call, `FoundryAgent` runs the local function and sends the result back. The MCP knowledge base and web search tools run entirely server-side.
+The client uses the Microsoft Agent Framework (`agent_framework.foundry.FoundryAgent`). It connects to the existing server-side agent by name and passes in the local Python implementations of the weather forecast and hotel search tools. When the server-side agent requests a function call, `FoundryAgent` runs the local function and sends the result back. The MCP knowledge base and web search tools run entirely server-side.
 
 - Conversations persist across turns (`agent.create_conversation()`), so the agent remembers earlier messages.
 - The `log_tool_calls` middleware prints every function call and a truncated result.
 - If a turn fails, the client starts a new conversation. The server-side thread could otherwise be left with a function call that has no output, and it could not continue.
+- After each reply, the client calls `text_to_speech()` with the reply text and saves the audio to `outputs/audio_file.wav` (see [Speech output](#speech-output-azurespeechservice)).
 
 ### Behaviour (system prompt in `config.yaml`)
 
@@ -268,7 +288,6 @@ The prompt ends with good and bad examples for citations, missing information, w
 | `knowledge_base_retrieve` | MCP (Foundry IQ) | Server-side | RAG retrieval from the travel guide |
 | `web_search` | Built-in `WebSearchTool` | Server-side | Fallback for information missing from the knowledge base |
 | `get_forecast_weather` | `FunctionTool` | Locally, in `agent_execution.py` | Daily forecast for a location and date range |
-| `get_current_weather` | `FunctionTool` | Locally, in `agent_execution.py` | Current weather conditions |
 | `search_for_hotels` | `FunctionTool` | Locally, in `agent_execution.py` | Hotel search on booking sites via Tavily |
 
 ### Foundry IQ knowledge base (`knowledge_base_retrieve`)
@@ -287,12 +306,12 @@ The prompt ends with good and bad examples for citations, missing information, w
 
 A `WebSearchTool` with a medium search context size, an approximate user location (Warsaw, PL) and `external_web_access=False`. The system prompt allows it only when the knowledge base has no answer.
 
-### Weather tools (`classes/weather_services.py`)
+### Weather tool (`classes/weather_services.py`)
 
-Both tools call the [Visual Crossing Timeline API](https://www.visualcrossing.com/resources/documentation/weather-api/timeline-weather-api/) with metric units, a 10 s timeout and the `VISUAL_CROSSING_API_KEY` environment variable.
+The tool calls the [Visual Crossing Timeline API](https://www.visualcrossing.com/resources/documentation/weather-api/timeline-weather-api/) with metric units, a 10 s timeout and the `VISUAL_CROSSING_API_KEY` environment variable.
 
-- **`get_forecast_weather(location, start_date=None, end_date=None)`** returns daily data only (no hourly data, to keep the tool output small): date, max/min/feels-like temperature, precipitation, precipitation probability and type, wind speed, conditions, description, sunrise and sunset. Without dates it returns the next 15 days. Dates use `YYYY-MM-DD` format.
-- **`get_current_weather(location)`** returns the current conditions.
+**`get_forecast_weather(location, start_date=None, end_date=None)`** returns daily data only (no hourly data, to keep the tool output small): date, max/min/feels-like temperature, precipitation, precipitation probability and type, wind speed, conditions, description, sunrise and sunset. Without dates it returns the next 15 days. Dates use `YYYY-MM-DD` format.
+`weather_services.py` also contains a `get_current_weather(location)` function for current conditions. It is not attached to the agent at the moment.
 
 Sunrise and sunset times are shortened to `HH:MM` (`utils/utils.py`). Errors never raise exceptions. They come back as `{"error": "..."}`, for example for an unknown city, an invalid date, a timeout or a missing API key, so the agent can react to them in its answer.
 
@@ -338,11 +357,39 @@ Example result:
 }
 ```
 
-The tool returns raw page snippets (`title`, `content`), not structured hotel data. The agent extracts the hotel name, price, rating and highlights from them, following the hotel reporting rules in the system prompt. As with the weather tools, errors never raise exceptions. A missing city, a missing API key, no results or a failed Tavily call come back as `{"error": "..."}`.
+The tool returns raw page snippets (`title`, `content`), not structured hotel data. The agent extracts the hotel name, price, rating and highlights from them, following the hotel reporting rules in the system prompt. As with the weather tool, errors never raise exceptions. A missing city, a missing API key, no results or a failed Tavily call come back as `{"error": "..."}`.
 
 ### Keeping tool schemas in sync
 
 The function tool schemas are defined twice. `agent_deployment.py` holds the `FunctionTool` JSON schemas for the server-side agent, and `weather_services.py` / `hotel_services.py` hold the `@tool` Python implementations for the client. **Keep the tool and parameter names in sync.**
+
+---
+
+## Speech output: `AzureSpeechService`
+
+The agent's answer is also produced as audio. After every reply, `agent_execution.py` passes the final reply text to `text_to_speech()` in `classes/speech_services.py`. [Azure AI Speech](https://learn.microsoft.com/azure/ai-services/speech-service/text-to-speech) synthesizes the text, and the Speech SDK saves the result to `outputs/audio_file.wav`.
+
+This client is a command-line chat, so the audio is only written to disk. The file is meant as the spoken output of a complete application: a web or mobile app, or a voice assistant, can play it back to the user together with the text answer or instead of it.
+
+Speech is not an agent tool. The agent does not decide when to call it, and nothing about it is defined in `agent_deployment.py`. It is a post-processing step that the client runs on the finished reply.
+
+### How it works
+
+1. `text_to_speech(text, voice_name="en-US-AvaMultilingualNeural")` builds a `SpeechConfig` from the `SPEECH_KEY` and `SPEECH_REGION` environment variables and creates an `AzureSpeechService`.
+2. `AzureSpeechService.synthesize_speech()` sets the voice, points the audio output at the file, and sends the text to the service with `speak_text_async()`.
+3. The method returns a status string, which the client prints under `SPEECH SYNTHESIS RESULT`: `Success: ...` when the file was written, or `ERROR: ...` with the cancellation reason and error details when synthesis failed.
+
+| Setting | Value |
+|---|---|
+| Voice | `en-US-AvaMultilingualNeural` by default. Pass `voice_name` to use another neural voice. |
+| Output file | `outputs/audio_file.wav`. The path is fixed, so each reply overwrites the previous file. The `outputs/` folder is git-ignored and is created automatically. |
+| Audio format | WAV, 16 kHz, 16-bit, mono (the Speech SDK default) |
+| Input | The full reply text as the agent returned it. Markdown, citation markers and links are not stripped first. |
+| Authentication | `SPEECH_KEY` and `SPEECH_REGION` |
+
+### Speech-to-text
+
+`AzureSpeechService.transcribe_audio(audio_path)` does the opposite: it transcribes a local audio file to text. The chat loop does not use it yet. It is there so an application can accept spoken questions as well. `speech_services.py` also contains commented-out `@tool` wrappers for both directions, in case speech should become something the agent calls itself.
 
 ---
 

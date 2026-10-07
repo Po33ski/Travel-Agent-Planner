@@ -28,3 +28,9 @@ az cognitiveservices account keys list `
 --resource-group aiagent-travel9871v3-rg `
 --name aiagent-travel9871v3 `
 --query key1 -o tsv
+
+# SPEECH_KEY - the client synthesizes the agent's replies to audio
+az cognitiveservices account keys list `
+--resource-group aiagent-travel9871v3-rg `
+--name aiagent-travel9871v3-speech `
+--query key1 -o tsv

@@ -287,5 +287,5 @@ output aiFoundryName string = aiFoundry.name
 output blobContainerName string = container.name
 output knowledgeBaseName string = knowledgeBaseName
 output knowledgeBaseConnectionName string = kbConnection.name
+output speechName string = speech.name
 output speech_region string = location
-output speech_key string = speech.listKeys().key1

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1420" height="990" viewBox="0 0 1420 990" role="img" aria-labelledby="title desc">
   <title id="title">Travel Agent Planner architecture</title>
-  <desc id="desc">A prompt agent in Azure AI Foundry Agent Service, guarded by a RAI policy, with a Foundry IQ knowledge base reached over MCP, built-in web search, and function tools executed by the local client, which calls the Visual Crossing and Tavily APIs. Setup scripts deploy the Azure resources, build the knowledge base and create the agent.</desc>
+  <desc id="desc">A prompt agent in Azure AI Foundry Agent Service, guarded by a RAI policy, with a Foundry IQ knowledge base reached over MCP, built-in web search, and function tools executed by the local client, which calls the Visual Crossing and Tavily APIs. After each reply the client sends the reply text to Azure AI Speech and saves the synthesized audio to a local WAV file. Setup scripts deploy the Azure resources, build the knowledge base and create the agent.</desc>
 
   <style>
     text { font-family: "Segoe UI", -apple-system, "Helvetica Neue", Arial, sans-serif; fill: #1F2328; }
@@ -38,14 +38,18 @@
   <!-- Canvas -->
   <rect x="0" y="0" width="1420" height="990" rx="16" fill="#FFFFFF"/>
   <text x="30" y="44" class="h1">Travel Agent Planner · Architecture</text>
-  <text x="30" y="68" class="sub">Azure AI Foundry prompt agent with a Foundry IQ knowledge base (MCP), web search, locally executed function tools and a RAI guardrail</text>
+  <text x="30" y="68" class="sub">Azure AI Foundry prompt agent with a Foundry IQ knowledge base (MCP), web search, locally executed function tools, a RAI guardrail and spoken output from Azure AI Speech</text>
 
   <!-- ============================ LEFT: local runtime ============================ -->
   <rect x="30" y="90" width="340" height="400" rx="12" fill="#F6F8FA" stroke="#D0D7DE"/>
   <text x="46" y="114" class="zone">LOCAL MACHINE · RUNTIME</text>
 
-  <rect x="110" y="128" width="180" height="44" rx="22" class="box"/>
-  <text x="200" y="155" class="t c">User (terminal)</text>
+  <rect x="46" y="128" width="150" height="44" rx="22" class="box"/>
+  <text x="121" y="155" class="t c">User (terminal)</text>
+
+  <rect x="212" y="128" width="142" height="44" rx="10" fill="#FDF2F8" stroke="#BF3989"/>
+  <text x="283" y="147" class="mono c" style="font-size:10.5px">outputs/audio_file.wav</text>
+  <text x="283" y="163" class="xs c">spoken reply · WAV</text>
 
   <rect x="46" y="200" width="308" height="274" rx="10" class="box"/>
   <circle cx="64" cy="222" r="10" class="badge"/><text x="64" y="226" class="badge-t">4</text>
@@ -56,15 +60,16 @@
   <rect x="62" y="306" width="276" height="26" rx="13" fill="#EEFBF3" stroke="#1A7F37"/>
   <text x="200" y="323" class="mono c" style="font-size:12px">get_forecast_weather</text>
   <rect x="62" y="338" width="276" height="26" rx="13" fill="#EEFBF3" stroke="#1A7F37"/>
-  <text x="200" y="355" class="mono c" style="font-size:12px">get_current_weather</text>
-  <rect x="62" y="370" width="276" height="26" rx="13" fill="#EEFBF3" stroke="#1A7F37"/>
-  <text x="200" y="387" class="mono c" style="font-size:12px">search_for_hotels</text>
-  <text x="62" y="422" class="s">middleware: log_tool_calls (prints every call)</text>
-  <text x="62" y="442" class="xs mono">classes/weather_services.py</text>
-  <text x="62" y="458" class="xs mono">classes/hotel_services.py</text>
+  <text x="200" y="355" class="mono c" style="font-size:12px">search_for_hotels</text>
+  <text x="62" y="386" class="t" style="font-size:11.5px">After each reply</text>
+  <rect x="62" y="396" width="276" height="26" rx="13" fill="#FDF2F8" stroke="#BF3989"/>
+  <text x="200" y="413" class="mono c" style="font-size:12px">text_to_speech(reply)</text>
+  <text x="62" y="444" class="s">middleware: log_tool_calls (prints every call)</text>
+  <text x="62" y="462" class="xs mono">classes/{weather,hotel,speech}_services.py</text>
 
-  <!-- User <-> agent_execution -->
-  <path d="M200,172 V200" class="run" marker-start="url(#a-run)" marker-end="url(#a-run)"/>
+  <!-- User <-> agent_execution, agent_execution -> audio file -->
+  <path d="M121,172 V200" class="run" marker-start="url(#a-run)" marker-end="url(#a-run)"/>
+  <path d="M283,200 V172" class="run" marker-end="url(#a-run)"/>
 
   <!-- ============================ LEFT: external APIs ============================ -->
   <rect x="30" y="530" width="340" height="210" rx="12" fill="#FFF8EE" stroke="#E3A008"/>
@@ -94,18 +99,20 @@
   <!-- ============================ LEFT: legend ============================ -->
   <rect x="30" y="780" width="340" height="180" rx="12" fill="#F6F8FA" stroke="#D0D7DE"/>
   <text x="46" y="804" class="zone">LEGEND</text>
-  <path d="M46,828 H94" class="run" marker-end="url(#a-run)"/>
-  <text x="108" y="832" class="s" style="fill:#1F2328">runtime call (request ⇄ response)</text>
-  <path d="M46,854 H94" class="setup" marker-end="url(#a-setup)"/>
-  <text x="108" y="858" class="s" style="fill:#1F2328">setup / deployment (creates resources)</text>
-  <path d="M46,880 H94" class="guard" marker-end="url(#a-guard)"/>
-  <text x="108" y="884" class="s" style="fill:#1F2328">RAI guardrail filtering</text>
-  <circle cx="56" cy="906" r="10" class="badge"/><text x="56" y="910" class="badge-t">1</text>
-  <circle cx="88" cy="906" r="10" class="badge"/><text x="88" y="910" class="badge-t">4</text>
-  <text x="72" y="910" class="s c" style="fill:#1F2328">–</text>
-  <text x="108" y="910" class="s" style="fill:#1F2328">order in which the scripts are run</text>
-  <rect x="46" y="925" width="48" height="16" rx="8" fill="#EEFBF3" stroke="#1A7F37"/>
-  <text x="108" y="937" class="s" style="fill:#1F2328">function tool (executed by the local client)</text>
+  <path d="M46,826 H94" class="run" marker-end="url(#a-run)"/>
+  <text x="108" y="830" class="s" style="fill:#1F2328">runtime call (request ⇄ response)</text>
+  <path d="M46,849 H94" class="setup" marker-end="url(#a-setup)"/>
+  <text x="108" y="853" class="s" style="fill:#1F2328">setup / deployment (creates resources)</text>
+  <path d="M46,872 H94" class="guard" marker-end="url(#a-guard)"/>
+  <text x="108" y="876" class="s" style="fill:#1F2328">RAI guardrail filtering</text>
+  <circle cx="56" cy="896" r="10" class="badge"/><text x="56" y="900" class="badge-t">1</text>
+  <circle cx="88" cy="896" r="10" class="badge"/><text x="88" y="900" class="badge-t">4</text>
+  <text x="72" y="900" class="s c" style="fill:#1F2328">–</text>
+  <text x="108" y="900" class="s" style="fill:#1F2328">order in which the scripts are run</text>
+  <rect x="46" y="913" width="48" height="14" rx="7" fill="#EEFBF3" stroke="#1A7F37"/>
+  <text x="108" y="924" class="s" style="fill:#1F2328">function tool (executed by the local client)</text>
+  <rect x="46" y="935" width="48" height="14" rx="7" fill="#FDF2F8" stroke="#BF3989"/>
+  <text x="108" y="946" class="s" style="fill:#1F2328">speech output (reply text → audio file)</text>
 
   <!-- ============================ MIDDLE: Azure ============================ -->
   <rect x="410" y="90" width="640" height="870" rx="12" fill="#F0F7FF" stroke="#0078D4" stroke-width="1.5"/>
@@ -131,9 +138,8 @@
   <rect x="442" y="280" width="148" height="130" rx="10" fill="#EEFBF3" stroke="#1A7F37"/>
   <text x="516" y="302" class="t c">Function tools</text>
   <text x="516" y="318" class="xs c">schemas · run on the client</text>
-  <text x="516" y="342" class="mono c" style="font-size:10.5px">get_forecast_weather</text>
-  <text x="516" y="362" class="mono c" style="font-size:10.5px">get_current_weather</text>
-  <text x="516" y="382" class="mono c" style="font-size:10.5px">search_for_hotels</text>
+  <text x="516" y="348" class="mono c" style="font-size:10.5px">get_forecast_weather</text>
+  <text x="516" y="372" class="mono c" style="font-size:10.5px">search_for_hotels</text>
 
   <!-- Web search -->
   <rect x="872" y="286" width="146" height="56" rx="10" fill="#EAF6F9" stroke="#1B7C9A"/>
@@ -176,12 +182,20 @@
   <text x="872" y="716" class="xs">semantic ranker</text>
 
   <!-- Storage -->
-  <rect x="426" y="820" width="608" height="124" rx="10" fill="#FFFFFF" stroke="#7AA7D9" stroke-width="1.2"/>
-  <text x="442" y="842" class="group" style="fill:#0060AA">Storage account</text>
-  <rect x="442" y="856" width="260" height="74" rx="10" fill="#F0F7FF" stroke="#0078D4"/>
-  <text x="572" y="878" class="t c">blob container: <tspan class="mono">travel-guide</tspan></text>
-  <text x="572" y="898" class="mono c" style="font-size:11px">world_city_travel_guide.md</text>
-  <text x="572" y="916" class="xs c">182 cities · copied from inputs/</text>
+  <rect x="736" y="820" width="298" height="124" rx="10" fill="#FFFFFF" stroke="#7AA7D9" stroke-width="1.2"/>
+  <text x="752" y="842" class="group" style="fill:#0060AA">Storage account</text>
+  <rect x="752" y="856" width="266" height="74" rx="10" fill="#F0F7FF" stroke="#0078D4"/>
+  <text x="885" y="878" class="t c">blob container: <tspan class="mono">travel-guide</tspan></text>
+  <text x="885" y="898" class="mono c" style="font-size:11px">world_city_travel_guide.md</text>
+  <text x="885" y="916" class="xs c">182 cities · copied from inputs/</text>
+
+  <!-- Azure AI Speech -->
+  <rect x="426" y="820" width="292" height="124" rx="10" fill="#FFFFFF" stroke="#7AA7D9" stroke-width="1.2"/>
+  <text x="442" y="842" class="group" style="fill:#0060AA">Azure AI Speech <tspan class="s" style="font-weight:400">· free tier (F0)</tspan></text>
+  <rect x="442" y="856" width="260" height="74" rx="10" fill="#FDF2F8" stroke="#BF3989"/>
+  <text x="572" y="878" class="t c">text-to-speech</text>
+  <text x="572" y="898" class="mono c" style="font-size:11px">en-US-AvaMultilingualNeural</text>
+  <text x="572" y="916" class="xs c">reply text in · 16 kHz mono WAV out</text>
 
   <!-- Runtime arrows (Azure side) -->
   <!-- prompt / reply -->
@@ -206,8 +220,11 @@
   <text x="953" y="530" class="xs">ingestion &amp;</text>
   <text x="953" y="544" class="xs">query planning</text>
   <!-- indexer reads blob -->
-  <path d="M566,856 V786" class="run" marker-end="url(#a-run)"/>
-  <text x="574" y="815" class="xs halo">indexer reads blobs</text>
+  <path d="M900,856 V811 H566 V786" class="run" marker-end="url(#a-run)"/>
+  <text x="908" y="842" class="xs">indexer reads blobs</text>
+  <!-- client <-> Azure AI Speech -->
+  <path d="M354,409 H398 V882 H426" class="run" marker-start="url(#a-run)" marker-end="url(#a-run)"/>
+  <text transform="translate(392,650) rotate(-90)" class="xs c halo" style="fill:#1F2328">reply text ⇄ audio (Speech SDK)</text>
   <!-- guardrail -->
   <path d="M760,228 V286" class="guard" marker-end="url(#a-guard)"/>
   <text x="770" y="261" class="xs" style="fill:#A40E26">filters every prompt &amp; completion</text>
@@ -233,17 +250,18 @@
   <text x="1122" y="399" class="s">RaiPolicyManager · FunctionTool · MCPTool</text>
   <text x="1122" y="417" class="s" style="fill:#1F2328">→ RAI policy + new agent version</text>
 
-  <rect x="1106" y="470" width="268" height="130" rx="10" class="box"/>
+  <rect x="1106" y="470" width="268" height="146" rx="10" class="box"/>
   <text x="1122" y="494" class="t">Environment variables</text>
   <text x="1122" y="512" class="xs">.env · git-ignored · never committed</text>
   <text x="1122" y="536" class="mono" style="font-size:10px">PROJECT_ENDPOINT · AGENT_NAME</text>
   <text x="1122" y="552" class="mono" style="font-size:10px">SEARCH_ENDPOINT · KNOWLEDGE_BASE_*</text>
   <text x="1122" y="568" class="mono" style="font-size:10px">VISUAL_CROSSING_API_KEY · TAVILY_API_KEY</text>
   <text x="1122" y="584" class="mono" style="font-size:10px">AOAI_API_KEY · STORAGE_CONNECTION_STRING</text>
+  <text x="1122" y="600" class="mono" style="font-size:10px">SPEECH_KEY · SPEECH_REGION</text>
 
-  <rect x="1106" y="620" width="268" height="62" rx="10" class="box"/>
-  <text x="1122" y="644" class="t mono" style="font-size:12px">scripts/*.sh</text>
-  <text x="1122" y="664" class="s">CLI steps: env setup · deploy · delete</text>
+  <rect x="1106" y="636" width="268" height="62" rx="10" class="box"/>
+  <text x="1122" y="660" class="t mono" style="font-size:12px">scripts/*.sh</text>
+  <text x="1122" y="680" class="s">CLI steps: env setup · deploy · delete</text>
 
   <rect x="1106" y="722" width="268" height="160" rx="10" class="box"/>
   <circle cx="1124" cy="744" r="10" class="badge"/><text x="1124" y="748" class="badge-t">2</text>

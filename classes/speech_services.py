@@ -46,10 +46,13 @@ class AzureSpeechService:
         if not self.speech_client:
             return "ERROR: Speech service is not configured."
 
-        output_audio_path = "outputs/audo_file.wav"
+        output_audio_path = "outputs/audio_file.wav"
         print(f"[SPEECH TTS] Synthesizing text to file: '{output_audio_path}'")
 
         try:
+            # outputs/ is git-ignored, so it does not exist in a fresh clone
+            os.makedirs(os.path.dirname(output_audio_path), exist_ok=True)
+
             # Set a specific neural voice if provided
             if voice_name:
                 self.speech_client.speech_synthesis_voice_name = voice_name
