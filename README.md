@@ -1,6 +1,6 @@
 # Travel Agent Planner
 
-> **This is the multi-agent version.** The `main` branch runs a team of five agents coordinated with the **Magentic orchestration** from Microsoft Agent Framework. The original version with a single agent is on the [`single-agent`](https://github.com/Po33ski/Travel-Agent-Planner/tree/single-agent) branch.
+> **This is the multi-agent version.** The `main` branch runs a team of five agents coordinated with the **Magentic orchestration** from Microsoft Agent Framework. The another version with a single agent is on the [`single-agent`](https://github.com/Po33ski/Travel-Agent-Planner/tree/single-agent) branch.
 
 An AI assistant that helps you plan a trip to a chosen destination anywhere in the world. A **manager agent** plans the work and delegates it to four **specialist agents**, all hosted server-side in **Azure AI Foundry Agent Service**:
 

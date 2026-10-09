@@ -5,6 +5,7 @@ from azure.identity import DefaultAzureCredential
 from agent_framework.foundry import FoundryAgent
 from agent_framework.orchestrations import MagenticBuilder
 from agent_framework import FunctionInvocationContext
+from agent_framework.exceptions import ChatClientContentFilterException
 from classes.weather_services import get_forecast_weather
 from classes.hotel_services import search_for_hotels
 from classes.speech_services import text_to_speech
@@ -137,6 +138,14 @@ async def run_workflow(manager_agent, participants):
             print("SPEECH SYNTHESIS RESULT:")
             print(f"\n[SPEECH] {str(speech_result)}")
             print("=" * 50)
+
+        except ChatClientContentFilterException as e:
+            # The RAI policy blocked the input of the manager or of one of the specialists
+            checks = getattr(e, "content_filter_result", None) or {}
+            triggered = [name for name, check in checks.items() if check.filtered]
+            reason = f" ({', '.join(triggered)})" if triggered else ""
+            print(f"🛡️ Your request was blocked by the content safety policy{reason}.")
+            print("Please rephrase your message and try again.")
 
         except Exception as e:
             print(f"❌ ERROR during workflow execution: {e}")
