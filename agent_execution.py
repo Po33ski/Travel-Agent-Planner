@@ -1,6 +1,8 @@
 import os
+import json
 import asyncio
 import logging
+from pathlib import Path
 from azure.identity import DefaultAzureCredential
 from agent_framework.foundry import FoundryAgent
 from agent_framework.orchestrations import MagenticBuilder
@@ -18,6 +20,15 @@ endpoint = os.getenv("PROJECT_ENDPOINT")
 agent_name = os.getenv("AGENT_NAME")
 resolved_key = os.getenv("SPEECH_KEY")
 resolved_region = os.getenv("SPEECH_REGION")
+
+# User requests and final answers collected as fine-tuning examples
+RESPONSES_FILE = Path("outputs") / "responses.json"
+# Short stand-in for the agents' full system prompts: a fine-tuned model should learn
+# the detailed rules from the examples instead of reading them in every prompt
+FINE_TUNING_SYSTEM_PROMPT = (
+    "You are a travel assistant. You plan trips and answer travel questions using a travel guide, "
+    "web search, weather forecasts and hotel search, and you never invent facts."
+)
 
 credential = DefaultAzureCredential()
 # =============================================================================
@@ -92,6 +103,33 @@ def create_workflow(manager_agent, participants):
     return workflow_agent
 
 
+def save_response(user_text: str, assistant_text: str) -> None:
+    """Append one user request and the workflow's final answer to responses.json.
+
+    Each record uses the chat fine-tuning format: a system, a user and an assistant message.
+    """
+    record = {
+        "messages": [
+            {"role": "system", "content": FINE_TUNING_SYSTEM_PROMPT},
+            {"role": "user", "content": user_text},
+            {"role": "assistant", "content": assistant_text},
+        ]
+    }
+
+    try:
+        records = []
+        if RESPONSES_FILE.exists() and RESPONSES_FILE.stat().st_size > 0:
+            records = json.loads(RESPONSES_FILE.read_text(encoding="utf-8"))
+        records.append(record)
+
+        RESPONSES_FILE.parent.mkdir(parents=True, exist_ok=True)
+        RESPONSES_FILE.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"[DATA] Saved example {len(records)} to {RESPONSES_FILE}")
+    except (OSError, json.JSONDecodeError) as e:
+        # A broken file is left untouched so earlier examples are not overwritten
+        print(f"[DATA] Could not save the example to {RESPONSES_FILE}: {e}")
+
+
 # Microsoft Agent Frame is built entirely on async programming.
 # agent.run() is an async method, so you need to run it in an async context.
 async def run_workflow(manager_agent, participants):
@@ -132,6 +170,8 @@ async def run_workflow(manager_agent, participants):
             print("=" * 50)
             print(final_text)
             print("=" * 50)
+
+            save_response(user_message_text, final_text)
 
             speech_result = text_to_speech(final_text)
             print("\n" + "=" * 50)

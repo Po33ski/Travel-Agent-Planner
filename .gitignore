@@ -1,5 +1,6 @@
 # Environment Variables
 .env
 launch.json
+responses.json
 tutorials/
 _pycache__/
