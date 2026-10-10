@@ -13,6 +13,8 @@ The team uses **two LLMs**: `gpt-5.6-luna` for the manager, which does the plann
 
 A typical answer includes a weather summary for the travel dates, a day-by-day plan with citations to the travel guide, hotel suggestions with prices and booking links (when the user asks about accommodation), and transport and practical tips. The final answer is also read out with **Azure AI Speech** and saved as an audio file.
 
+Every user signs in with a name. Their profile, preferences and conversation history (in a chat fine-tuning format) are kept in **Azure Cosmos DB**, and **Azure AI Language** detects the language of each question and stores it as a preference. All endpoints, resource names and keys live in **Azure Key Vault**, so the only setting a script needs is the Key Vault URL.
+
 ![Travel Agent Planner architecture](docs/architecture.svg)
 
 ## Table of contents
@@ -22,8 +24,9 @@ A typical answer includes a weather summary for the travel dates, a day-by-day p
 3. [Infrastructure: `resource_deployment.bicep`](#infrastructure-resource_deploymentbicep)
 4. [The agents](#the-agents)
 5. [Tools](#tools)
-6. [Guardrail configuration: `StrictGuardrail`](#guardrail-configuration-strictguardrail)
-7. [Clean-up](#clean-up)
+6. [User memory and language detection](#user-memory-and-language-detection)
+7. [Guardrail configuration: `StrictGuardrail`](#guardrail-configuration-strictguardrail)
+8. [Clean-up](#clean-up)
 
 ---
 
@@ -31,12 +34,15 @@ A typical answer includes a weather summary for the travel dates, a day-by-day p
 
 | Path | Purpose |
 |---|---|
-| `resource_deployment.bicep` | Azure infrastructure: Foundry resource and project, model deployments, AI Search, Storage, Speech, knowledge base connection and role assignments |
+| `resource_deployment.bicep` | Azure infrastructure: Foundry resource and project, model deployments, AI Search, Storage, Speech, Language, Cosmos DB, Key Vault with all settings and keys, knowledge base connection and role assignments |
 | `rag_setup.py` | Uploads the travel guide and builds the Foundry IQ knowledge source and knowledge base |
 | `agents/<agent>_deployment.py` | One script per agent. Creates or updates the RAI policy and the server-side agent (system prompt and tools) |
 | `agents/<agent>_config.yaml` | One file per agent: agent name and system prompt |
-| `agent_execution.py` | Interactive command-line chat. Builds the Magentic workflow, runs the weather and hotel search tools locally and converts the final answer to speech |
-| `config.yaml` | Guardrail (RAI) settings shared by all agents |
+| `agent_execution.py` | Interactive command-line chat. Asks for the user name, builds the Magentic workflow, runs the weather and hotel search tools locally, saves the conversation and preferences to Cosmos DB and converts the final answer to speech |
+| `config.yaml` | Guardrail (RAI) settings shared by all agents, profile TTL for Cosmos DB and the NLP sentiment threshold |
+| `classes/secret_manager_services.py` | `SecretManager`: reads secrets from Key Vault and caches them in memory |
+| `classes/cosmos_memory_services.py` | `CosmosMemory`: user profiles, preferences and conversation history in Cosmos DB |
+| `classes/azure_nlp_services.py` | `AzureNLPService`: language detection and other Azure AI Language features |
 | `classes/foundry_iq_services.py` | `FoundryIQService`: blob upload, knowledge source, ingestion, knowledge base, MCP tool |
 | `classes/weather_services.py` | `WeatherService` and the `get_forecast_weather` / `get_current_weather` tools |
 | `classes/hotel_services.py` | `HotelService` (Tavily client) and the `search_for_hotels` tool |
@@ -60,6 +66,8 @@ A typical answer includes a weather summary for the travel dates, a day-by-day p
 - A [Visual Crossing](https://www.visualcrossing.com/weather-api) API key for weather data
 - A [Tavily](https://tavily.com) API key for hotel search
 
+The template uses free tiers, and Azure allows **one of each per subscription**: a free (F0) Speech resource, a free (F0) Language resource, a free Azure AI Search service and a Cosmos DB account with the free tier. If one of them already exists, or a Speech or Language resource is still soft-deleted, the deployment fails (for example with `CanNotCreateMultipleFreeAccounts`). See [Clean-up](#clean-up) for how to purge soft-deleted resources.
+
 > The commands in `scripts/*.sh` use PowerShell line continuation (`` ` ``). Run them in PowerShell, or replace the backticks with `\` in bash.
 
 ### 1. Python environment
@@ -78,80 +86,79 @@ az bicep install
 az bicep upgrade
 ```
 
-### 3. Deploy the Azure resources
+### 3. Add the third-party API keys to `.env`
 
-Choose a unique prefix. Resource names, including the globally unique storage account name, are derived from it.
+Create a `.env` file in the repository root. It is listed in `.gitignore`, so **never commit it**. It holds only the two keys that do not come from Azure:
+
+```dotenv
+VISUAL_CROSSING_API_KEY="<your Visual Crossing key>"
+TAVILY_API_KEY="<your Tavily key>"
+```
+
+The deployment passes them to the template as `@secure()` parameters, and the template stores them in Key Vault. The Python code never reads `.env`.
+
+### 4. Deploy the Azure resources
+
+Choose a unique prefix. Resource names, including the globally unique storage account, Key Vault and Cosmos DB names, are derived from it. All resources are created in the resource group's region (see [Region](#region)).
 
 ```powershell
-az group create --name <resource-group> --location swedencentral
+az group create --name <resource-group> --location switzerlandnorth
+
+# Load .env into this PowerShell session (Bicep cannot read the file itself)
+Get-Content .env | ForEach-Object {
+  if ($_ -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$') {
+    Set-Item "env:$($Matches[1])" $Matches[2].Trim().Trim('"', "'")
+  }
+}
 
 az deployment group create `
   --resource-group <resource-group> `
   --template-file resource_deployment.bicep `
   --parameters projectPrefix="<prefix>" `
-    userPrincipalId="$(az ad signed-in-user show --query id -o tsv)"
+    userPrincipalId="$(az ad signed-in-user show --query id -o tsv)" `
+    visualCrossingApiKey="$env:VISUAL_CROSSING_API_KEY" `
+    tavilyApiKey="$env:TAVILY_API_KEY"
 
-# Endpoints, resource names and the Speech key for the environment variables
+# The only output is KEY_VAULT_URL
 az deployment group show `
   --resource-group <resource-group> `
   --name resource_deployment `
   --query properties.outputs
 ```
 
-> The template creates a **free (F0) Speech resource**, and Azure allows only one of these per subscription. If the deployment fails with `CanNotCreateMultipleFreeAccounts`, an earlier free Speech resource still exists or is soft-deleted. See [Clean-up](#clean-up) for how to purge it.
+Good to know:
 
-### 4. Retrieve the keys
+- **Preview before deploying.** Add `--confirm-with-what-if` to `az deployment group create` to see what will be created or changed and confirm with `y/n`. Secrets that hold keys always show as *Modify*, because what-if cannot evaluate `listKeys()` or secure parameters. Their values don't actually change.
+- **Running the deployment again is safe.** The default mode is incremental: resources that already exist with the same settings are left unchanged, and only missing ones are created. Properties changed by hand in the portal are reset to the values in the template.
+- **`InsufficientResourcesAvailable`** means the region has no capacity left for a new service of that type (most often the free Azure AI Search tier). Choose another region (see [Region](#region)).
 
-The deployment outputs contain one key, `speech_key`. Get the other two with the CLI. Put all of them **only** in your local `.env` file:
+### 5. Configure the local settings
 
-```powershell
-# STORAGE_CONNECTION_STRING: the Search indexer reads the blob container
-az storage account show-connection-string `
-  --resource-group <resource-group> `
-  --name <storage-account-name> `
-  --query connectionString -o tsv
+Every script reads its endpoints, names and keys from Key Vault when it starts. It only needs the following environment variables:
 
-# AOAI_API_KEY: Search calls the embedding and chat models
-az cognitiveservices account keys list `
-  --resource-group <resource-group> `
-  --name <foundry-resource-name> `
-  --query key1 -o tsv
+| Variable | Used by | Required | Description |
+|---|---|---|---|
+| `KEY_VAULT_URL` | all scripts | yes | `KEY_VAULT_URL` output of the deployment, for example `https://<prefix>-kv.vault.azure.net/` |
+| `SOURCE_FILE_PATH` | `rag_setup.py` | yes | `inputs/world_city_travel_guide.md` |
+| `KNOWLEDGE_SOURCE_NAME` | `rag_setup.py` | no | Default `travel-guide-ks` |
+| `USER_ROLE` | `agent_execution.py` | no | Stored in the profile of a new user, for example `Traveler` |
+
+None of them is secret. In VS Code, set them in the `env` section of each configuration in `.vscode/launch.json` (git-ignored), for example:
+
+```jsonc
+{
+  "name": "Python Debugger: Agent Execution",
+  "type": "debugpy",
+  "request": "launch",
+  "program": "${workspaceFolder}/agent_execution.py",
+  "env": {
+    "KEY_VAULT_URL": "https://<prefix>-kv.vault.azure.net/",
+    "USER_ROLE": "Traveler"
+  }
+}
 ```
 
-### 5. Configure environment variables
-
-Create a `.env` file in the repository root. It is listed in `.gitignore`, so **never commit it**. The scripts read settings from environment variables and do not load `.env` themselves. Load the file into the environment, for example with `envFile` in a VS Code `launch.json` (also git-ignored) or by exporting the variables in your shell.
-
-```dotenv
-# --- Azure / Foundry (from the Bicep outputs) ---
-PROJECT_ENDPOINT=https://<foundry-resource>.services.ai.azure.com/api/projects/<project>
-AOAI_ENDPOINT=https://<foundry-resource>.openai.azure.com
-# gpt-5.6-luna: the manager agent
-LLM_MODEL_DEPLOYMENT_NAME=<prefix>-llm-deploy
-# gpt-5-mini: the four specialist agents and the knowledge base (rag_setup.py)
-LLM_MINI_MODEL_DEPLOYMENT_NAME=<prefix>-llm-mini-deploy
-EMBEDDING_MODEL_DEPLOYMENT_NAME=<prefix>-embedding-deploy
-SEARCH_ENDPOINT=https://<prefix>-aisearch.search.windows.net
-STORAGE_ACCOUNT_URL=https://<storage-account>.blob.core.windows.net/
-BLOB_CONTAINER_NAME=travel-guide
-KNOWLEDGE_BASE_NAME=travel-guide-kb
-KNOWLEDGE_BASE_CONNECTION_NAME=travel-guide-kb-mcp
-KNOWLEDGE_SOURCE_NAME=travel-guide-ks
-SOURCE_FILE_PATH=inputs/world_city_travel_guide.md
-SPEECH_REGION=<resource-group-location>
-
-# --- RAI policy deployment (management plane) ---
-AZURE_SUBSCRIPTION_ID=<subscription-id>
-AZURE_RESOURCE_GROUP=<resource-group>
-AZURE_COGNITIVE_ACCOUNT_NAME=<foundry-resource-name>
-
-# --- Secrets (never commit) ---
-STORAGE_CONNECTION_STRING=<from step 4>
-AOAI_API_KEY=<from step 4>
-SPEECH_KEY=<speech_key from the Bicep outputs>
-VISUAL_CROSSING_API_KEY=<your Visual Crossing key>
-TAVILY_API_KEY=<your Tavily key>
-```
+The template gives your account the `Key Vault Secrets User` role. Role assignments can take a few minutes to take effect, so a `403 Forbidden` from Key Vault right after the deployment usually disappears on its own.
 
 ### 6. Build the knowledge base
 
@@ -183,6 +190,8 @@ Each script creates or updates the `StrictGuardrail` RAI policy, then creates a 
 python agent_execution.py
 ```
 
+The chat first asks for your **user name** and does not start the agents until you give one. A known name loads your existing profile, and a new name creates one (see [User memory and language detection](#user-memory-and-language-detection)).
+
 Type your questions at the `You:` prompt. Type `exit` or `quit`, or press `Ctrl+C`, to end the session. Every local tool call is logged as `[TOOL] -> ...` / `[TOOL] <- ...`.
 
 Each message is handled as a separate task and **the team does not remember earlier messages**, so put everything the team needs (destination, dates, budget, interests) in one message. An answer takes longer than with a single agent, because the manager and the specialists make several model calls per message.
@@ -203,14 +212,30 @@ I'm going to Lisbon from 2026-10-12 to 2026-10-15. Can you plan my trip and sugg
 
 ## Infrastructure: `resource_deployment.bicep`
 
-The template is based on the [Foundry basic setup sample](https://github.com/microsoft-foundry/foundry-samples/blob/main/infrastructure/infrastructure-setup-bicep/00-basic/main.bicep) and extended with the RAG components and the Speech resource. It deploys to the resource group's location.
+The template is based on the [Foundry basic setup sample](https://github.com/microsoft-foundry/foundry-samples/blob/main/infrastructure/infrastructure-setup-bicep/00-basic/main.bicep) and extended with the RAG components, Speech, Language, Cosmos DB and Key Vault. It deploys to the resource group's location.
+
+### Region
+
+The scripts use **Switzerland North**, the region closest to Poland that supports every service in this project. Regions that were checked against the Microsoft Learn region tables:
+
+| Region | Why it is not used |
+|---|---|
+| Poland Central | No Azure AI Speech |
+| Sweden Central, Germany West Central, West Europe, North Europe | Marked *high demand* for Azure AI Search: new search services can't be created |
+| Italy North, Norway East | No semantic ranker / agentic retrieval on the free Search tier |
+
+France Central and UK South support everything too. Regional capacity changes over time, so check the [Azure AI Search region list](https://learn.microsoft.com/azure/search/search-region-support) if a deployment fails with `InsufficientResourcesAvailable`.
+
+To use another region, change `--location` in `az group create`. Existing resources can't be moved to another region: delete the resource group, purge the soft-deleted resources (see [Clean-up](#clean-up)) and deploy again.
 
 ### Parameters
 
 | Parameter | Default | Description |
 |---|---|---|
 | `projectPrefix` | *(required)* | Base name for all resources |
-| `userPrincipalId` | *(required)* | Object ID of the user who runs `rag_setup.py` (`az ad signed-in-user show --query id -o tsv`) |
+| `userPrincipalId` | *(required)* | Object ID of the user who runs the scripts (`az ad signed-in-user show --query id -o tsv`) |
+| `visualCrossingApiKey` | *(required, secure)* | Visual Crossing API key, stored in Key Vault |
+| `tavilyApiKey` | *(required, secure)* | Tavily API key, stored in Key Vault |
 | `aiFoundryName` | `projectPrefix` | Foundry (AIServices) account name and custom subdomain |
 | `aiProjectName` | `<aiFoundryName>-proj` | Foundry project name |
 | `llmModelDeploymentName` | `<prefix>-llm-deploy` | `gpt-5.6-luna` deployment, used by the manager agent |
@@ -222,6 +247,11 @@ The template is based on the [Foundry basic setup sample](https://github.com/mic
 | `knowledgeBaseName` | `travel-guide-kb` | Must match the knowledge base created by `rag_setup.py` |
 | `knowledgeBaseConnectionName` | `<knowledgeBaseName>-mcp` | Project connection used by the knowledge base agent's MCP tool |
 | `speechName` | `<prefix>-speech` | Speech resource name and custom subdomain |
+| `languageName` | `<prefix>-language` | Language resource name and custom subdomain |
+| `cosmosDbAccountName` | `<prefix>-cosmos` | Cosmos DB account |
+| `databaseName` | `<prefix>-cosmosdb` | Cosmos DB database |
+| `containerName` | `<prefix>-container` | Cosmos DB container with the user profiles |
+| `keyVaultName` | first 21 characters of the prefix + `-kv` (max 24 chars) | Key Vault |
 | `location` | resource group location | Azure region for all resources |
 
 ### Resources
@@ -236,25 +266,51 @@ The template is based on the [Foundry basic setup sample](https://github.com/mic
 | **Azure AI Search** | `free` SKU, semantic ranker `free` (required by agentic retrieval). Accepts both Entra ID (for the user) and API keys (for services). |
 | **Storage account + blob container** | `StorageV2`, `Standard_LRS`, TLS 1.2, no public blob access. Shared-key access is enabled because the Search indexer reads the container with the account key. |
 | **Knowledge base connection** (`RemoteTool`, `CustomKeys`) | Project connection pointing at the knowledge base MCP endpoint (`.../knowledgebases/<kb>/mcp`). It stores the read-only Search **query key**, which is read from the search service at deployment time, so the key never appears in code or outputs. It can be created before the knowledge base exists. |
-| **Azure AI Speech** (`Microsoft.CognitiveServices/accounts`, kind `SpeechServices`, SKU `F0`) | Free tier, custom subdomain, key auth. Converts the final answer to speech. Only one free Speech resource is allowed per subscription. |
+| **Azure AI Speech** (kind `SpeechServices`, SKU `F0`) | Free tier, custom subdomain, key auth. Converts the final answer to speech. |
+| **Azure AI Language** (kind `TextAnalytics`, SKU `F0`) | Free tier, custom subdomain, key auth. Detects the language of the user's questions. |
+| **Azure Cosmos DB** (NoSQL API) | Free tier, `Session` consistency, single region. The database has 1,000 RU/s of shared throughput (covered by the free tier). The container is partitioned by `/userId`, has a default TTL of 90 days and a composite index on `userId` and `last_updated`. |
+| **Azure Key Vault** | `standard` SKU, Azure RBAC authorization, soft delete for 7 days. Purge protection is off so that the vault name can be reused after a clean-up; it is commented out in the template and should be enabled in production. Holds all settings and keys (see below). |
+
+### Key Vault secrets
+
+The template writes **25 secrets**. A secret name is the setting name with `-` instead of `_`, because Key Vault names can't contain underscores (for example `PROJECT_ENDPOINT` → `PROJECT-ENDPOINT`). Keys are read from the resources during the deployment (`listKeys()`), so they never appear in code, outputs or the deployment history.
+
+| Group | Secrets | Read by |
+|---|---|---|
+| Foundry | `PROJECT-ENDPOINT` | agent deployment scripts, `agent_execution.py` |
+| | `LLM-MODEL-DEPLOYMENT-NAME`, `LLM-MINI-MODEL-DEPLOYMENT-NAME` | agent deployment scripts (`rag_setup.py` also reads the mini model) |
+| | `AOAI-ENDPOINT`, `EMBEDDING-MODEL-DEPLOYMENT-NAME` | `rag_setup.py` |
+| RAI policy (management plane) | `AZURE-SUBSCRIPTION-ID`, `AZURE-RESOURCE-GROUP`, `AZURE-COGNITIVE-ACCOUNT-NAME` | agent deployment scripts |
+| Knowledge base | `SEARCH-ENDPOINT`, `KNOWLEDGE-BASE-NAME` | `rag_setup.py`, `rag_data_agent_deployment.py` |
+| | `KNOWLEDGE-BASE-CONNECTION-NAME` | `rag_data_agent_deployment.py` |
+| | `STORAGE-ACCOUNT-URL`, `BLOB-CONTAINER-NAME` | `rag_setup.py` |
+| Keys AI Search uses in the background | `AOAI-API-KEY`, `STORAGE-CONNECTION-STRING` | `rag_setup.py` (passed to the knowledge source) |
+| Speech | `SPEECH-KEY`, `SPEECH-REGION` | `speech_services.py` |
+| Language | `LANGUAGE-ENDPOINT`, `LANGUAGE-KEY` | `agent_execution.py` |
+| Cosmos DB | `COSMOSDB-ENDPOINT`, `COSMOSDB-DATABASE-NAME`, `COSMOSDB-CONTAINER-NAME`, `COSMOSDB-PRIMARY-KEY` | `agent_execution.py` |
+| Third-party APIs | `VISUAL-CROSSING-API-KEY`, `TAVILY-API-KEY` | `weather_services.py`, `hotel_services.py` |
+
+Each script creates a `SecretClient` with `DefaultAzureCredential` and wraps it in `SecretManager`, which caches every secret in memory for the lifetime of the process.
 
 ### Authentication model
 
 The project uses a hybrid approach:
 
-- **User → Azure (Entra ID).** `rag_setup.py`, the agent deployment scripts and `agent_execution.py` use `DefaultAzureCredential` (`az login`). The template assigns the user these roles:
+- **User → Azure (Entra ID).** All scripts use `DefaultAzureCredential` (`az login`) for Key Vault, the Foundry project and agents, Blob Storage, Azure AI Search and the RAI policy. The template assigns the user these roles:
+  - `Key Vault Secrets User` on the Key Vault (read the settings and keys)
   - `Storage Blob Data Contributor` on the storage account (upload documents)
   - `Search Service Contributor` on the search service (create knowledge sources and knowledge bases)
   - `Search Index Data Contributor` on the search service (read index content and status)
-- **Service → service (keys).** AI Search reads Storage with the account connection string and calls the models with the Foundry API key. The knowledge base agent queries the knowledge base with the Search query key stored in the project connection. The local client calls Speech with the Speech key.
+- **User → Azure (keys from Key Vault).** The local client calls Speech, Language and Cosmos DB with keys that it reads from Key Vault. The weather and hotel tools read the Visual Crossing and Tavily keys the same way.
+- **Service → service (keys).** AI Search reads Storage with the account connection string and calls the models with the Foundry API key. The knowledge base agent queries the knowledge base with the Search query key stored in the project connection.
+
+Even though most services are called with keys, Key Vault itself is always opened with Entra ID, so no secret is stored on disk except the two third-party keys in `.env`, which are only needed for the deployment.
 
 Role assignments for a fully managed-identity setup (Search → Storage, Search → Foundry, project → Search) are included in the template but commented out. The free Search tier does not support managed identities.
 
 ### Outputs
 
-`projectEndpoint`, `aoaiEndpoint`, `llmModelDeploymentName`, `llmMiniModelDeploymentName`, `embeddingModelDeploymentName`, `searchEndpoint`, `storageAccountUrl`, `storageAccountName`, `aiFoundryName`, `blobContainerName`, `knowledgeBaseName`, `knowledgeBaseConnectionName`, `speech_region`, `speech_key`. These feed the environment variables above.
-
-`speech_key` is the only secret in the outputs. It is stored in the deployment history of the resource group, and the Bicep linter warns about it (`outputs-should-not-contain-secrets`).
+The only output is `KEY_VAULT_URL`. It isn't a secret, and everything else is read from Key Vault.
 
 ---
 
@@ -274,30 +330,32 @@ All five agents are **prompt agents** (`PromptAgentDefinition`) hosted in Azure 
 
 Each script does the same four things for its own agent:
 
-1. Reads `config.yaml` (guardrails) and its own `<agent>_config.yaml` (agent name and system prompt).
+1. Reads its settings from Key Vault, `config.yaml` (guardrails) and its own `<agent>_config.yaml` (agent name and system prompt).
 2. Creates or updates the RAI policy through `RaiPolicyManager` and gets a `RaiConfig` back.
 3. Defines the agent's tool (see [Tools](#tools)). The manager has none.
 4. Calls `project_client.agents.create_version(...)`, which creates a new agent version with the instructions, tool and RAI config.
 
-The manager script takes its model from `LLM_MODEL_DEPLOYMENT_NAME`. The four specialist scripts take theirs from `LLM_MINI_MODEL_DEPLOYMENT_NAME`.
+The manager script takes its model from the `LLM-MODEL-DEPLOYMENT-NAME` secret. The four specialist scripts take theirs from `LLM-MINI-MODEL-DEPLOYMENT-NAME`.
 
 ### Orchestration (`agent_execution.py`)
 
 The orchestration runs **on the client**. The agents never call each other. The local Magentic workflow (`MagenticBuilder` from Microsoft Agent Framework) calls each server-side agent through a `FoundryAgent` client.
 
-For every user message the workflow does the following:
+Before the first message, the chat asks for the user name and loads or creates the user's profile in Cosmos DB. For every user message the workflow then does the following:
 
 1. **Plan.** The manager collects the known facts and writes a plan for the team.
 2. **Check progress.** At the start of each round the manager answers: is the request satisfied, is progress being made, which agent goes next and with what instruction.
 3. **Delegate.** The chosen specialist runs with that instruction. Its reply is shared with the other agents.
 4. **Answer.** When the manager judges the request satisfied, it writes the final answer from the collected results.
 
+After the answer is printed, `save_response_and_preferences()` stores the question and answer in the user's conversation history and saves the detected language, and `text_to_speech()` reads the answer out.
+
 Details worth knowing:
 
 - **The manager picks agents by name and description.** Each `FoundryAgent` is created with a `description`, and the manager's system prompt lists the same team.
 - **Function tools run locally.** `weatherAgent` and `hotelAgent` get the Python implementations of their tools. When the server-side agent requests a function call, `FoundryAgent` runs the local function and sends the result back. The MCP knowledge base and web search tools run entirely server-side.
 - **Limits.** `max_round_count=10`: one round is one progress check plus one agent turn, and a workflow that reaches the limit ends *without* a final answer. `max_stall_count=3`: after more than three rounds without progress the manager resets the team and replans.
-- **No memory between messages.** A Magentic workflow handles exactly one task and accepts a single task message, so a new workflow is built for every user message.
+- **No memory between messages.** A Magentic workflow handles exactly one task and accepts a single task message, so a new workflow is built for every user message. The conversation history in Cosmos DB is a record for fine-tuning; it isn't passed back to the agents.
 - **Speech.** The final answer is passed to `text_to_speech` and saved as a WAV file in `outputs/`.
 - The `log_tool_calls` middleware prints every local function call and a truncated result.
 
@@ -333,7 +391,7 @@ Details worth knowing:
 `FoundryIQService` (`classes/foundry_iq_services.py`) builds the knowledge base in five steps:
 
 1. `upload_blob()` uploads the source file (`inputs/world_city_travel_guide.md`) to the blob container with the correct content type.
-2. `create_blob_knowledge_source()` creates an Azure Blob knowledge source. Azure AI Search then generates `<name>-datasource`, `-skillset`, `-index` and `-indexer` automatically. Ingestion uses `gpt-5-mini` and `text-embedding-3-small` in `MINIMAL` content extraction mode.
+2. `create_blob_knowledge_source()` creates an Azure Blob knowledge source. Azure AI Search then generates `<name>-datasource`, `-skillset`, `-index` and `-indexer` automatically. Ingestion uses `gpt-5-mini` and `text-embedding-3-small` in `MINIMAL` content extraction mode, so no built-in AI enrichment skills are needed.
 3. `wait_for_ingestion()` polls the knowledge source status every 15 s, for up to 900 s. It fails if any document could not be indexed.
 4. `create_knowledge_base()` creates the knowledge base with `EXTRACTIVE_DATA` output mode (it returns raw chunks and the agent writes the answer) and automatic retrieval reasoning effort.
 5. `create_mcp_tool()` returns an `MCPTool` pointing at the knowledge base MCP endpoint (API version `2026-08-01-preview`). It is restricted to `knowledge_base_retrieve`, with `require_approval="never"` because the tool is read-only, and it authenticates through the `RemoteTool` project connection from the Bicep template.
@@ -346,17 +404,17 @@ A `WebSearchTool` with a medium search context size, an approximate user locatio
 
 ### Weather tool (`classes/weather_services.py`)
 
-The tool calls the [Visual Crossing Timeline API](https://www.visualcrossing.com/resources/documentation/weather-api/timeline-weather-api/) with metric units, a 10 s timeout and the `VISUAL_CROSSING_API_KEY` environment variable.
+The tool calls the [Visual Crossing Timeline API](https://www.visualcrossing.com/resources/documentation/weather-api/timeline-weather-api/) with metric units and a 10 s timeout. The API key comes from the `VISUAL-CROSSING-API-KEY` secret.
 
 **`get_forecast_weather(location, start_date=None, end_date=None)`** returns daily data only (no hourly data, to keep the tool output small): date, max/min/feels-like temperature, precipitation, precipitation probability and type, wind speed, conditions, description, sunrise and sunset. Without dates it returns the next 15 days. Dates use `YYYY-MM-DD` format.
 
-Sunrise and sunset times are shortened to `HH:MM` (`utils/utils.py`). Errors never raise exceptions. They come back as `{"error": "..."}`, for example for an unknown city, an invalid date, a timeout or a missing API key, so the agent can react to them in its answer.
+Sunrise and sunset times are shortened to `HH:MM` (`utils/utils.py`). Errors never raise exceptions. They come back as `{"error": "..."}`, for example for an unknown city, an invalid date, a timeout or a key that can't be read from Key Vault, so the agent can react to them in its answer.
 
 The module also contains `get_current_weather(location)`. It is not attached to any agent in this version.
 
 ### Hotel search tool (`classes/hotel_services.py`)
 
-Hotel search uses the [Tavily Search API](https://docs.tavily.com) (`tavily-python`) with the `TAVILY_API_KEY` environment variable. `HotelService` creates a `TavilyClient` in its constructor, and its `search_hotels()` method runs the search. The `search_for_hotels` tool is a thin wrapper that reads the API key, creates the service and returns its result.
+Hotel search uses the [Tavily Search API](https://docs.tavily.com) (`tavily-python`). The API key comes from the `TAVILY-API-KEY` secret. `HotelService` creates a `TavilyClient` in its constructor, and its `search_hotels()` method runs the search. The `search_for_hotels` tool is a thin wrapper that reads the API key, creates the service and returns its result.
 
 **`search_for_hotels(city, check_in=None, check_out=None, language="en")`**
 
@@ -396,11 +454,11 @@ Example result:
 }
 ```
 
-The tool returns raw page snippets (`title`, `content`), not structured hotel data. `hotelAgent` extracts the hotel name, price, rating and highlights from them, following the hotel reporting rules in its system prompt. As with the weather tool, errors never raise exceptions. A missing city, a missing API key, no results or a failed Tavily call come back as `{"error": "..."}`.
+The tool returns raw page snippets (`title`, `content`), not structured hotel data. `hotelAgent` extracts the hotel name, price, rating and highlights from them, following the hotel reporting rules in its system prompt. As with the weather tool, errors never raise exceptions. A missing city, a key that can't be read, no results or a failed Tavily call come back as `{"error": "..."}`.
 
 ### Text-to-speech (`classes/speech_services.py`)
 
-Speech is not an agent tool. `agent_execution.py` calls `text_to_speech(text, voice_name="en-US-AvaMultilingualNeural")` itself after every final answer. The function reads `SPEECH_KEY` and `SPEECH_REGION`, and `AzureSpeechService.synthesize_speech()` writes the audio to a WAV file in `outputs/`. It returns a `Success: ...` or `ERROR: ...` string and never raises an exception. `AzureSpeechService` also has a `transcribe_audio()` method for speech-to-text, which the chat does not use yet.
+Speech is not an agent tool. `agent_execution.py` calls `text_to_speech(text, voice_name="en-US-AvaMultilingualNeural")` itself after every final answer. The function reads `SPEECH-KEY` and `SPEECH-REGION` from Key Vault, and `AzureSpeechService.synthesize_speech()` writes the audio to a WAV file in `outputs/`. It returns a `Success: ...` or `ERROR: ...` string and never raises an exception. `AzureSpeechService` also has a `transcribe_audio()` method for speech-to-text, which the chat does not use yet.
 
 ### Keeping names and schemas in sync
 
@@ -408,6 +466,58 @@ Two things are defined in more than one place:
 
 - **Function tool schemas.** `agents/weather_agent_deployment.py` and `agents/hotel_agent_deployment.py` hold the `FunctionTool` JSON schemas for the server-side agents, and `weather_services.py` / `hotel_services.py` hold the `@tool` Python implementations for the client. Keep the tool and parameter names in sync.
 - **Agent names.** The `agent_name` in each `agents/<agent>_config.yaml` must match the name used in `agent_execution.py` and in the *Team* section of the manager's system prompt.
+
+---
+
+## User memory and language detection
+
+### Signing in with a user name
+
+`CosmosMemory.get_or_create_user()` looks up the profile whose `userName` matches the given name (case-insensitive). A returning user gets their stored user id. On first use a new id (UUID) is generated and a profile with default preferences is created.
+
+This is a demo shortcut: the name alone identifies the user, so two people with the same name share a profile. In production the user id would be the object ID (`oid` claim) of a user signed in with Microsoft Entra ID.
+
+### The profile document
+
+There is one document per user. Its `id` and the partition key `/userId` are both the user id.
+
+```json
+{
+  "id": "<uuid>",
+  "userId": "<uuid>",
+  "userName": "Anna",
+  "userRole": "Traveler",
+  "preferences": {
+    "language": "Polish",
+    "language_preference": "professional",
+    "email_address": null
+  },
+  "conversation_history": [
+    {
+      "messages": [
+        { "role": "system", "content": "You are a travel assistant. ..." },
+        { "role": "user", "content": "<the user's question>" },
+        { "role": "assistant", "content": "<the final answer>" }
+      ]
+    }
+  ],
+  "last_updated": "2026-10-10T21:15:00",
+  "ttl": 7776000
+}
+```
+
+- **`conversation_history`** collects one record per answered question in the chat fine-tuning format: a short system prompt (`FINE_TUNING_SYSTEM_PROMPT`), the user's question and the workflow's final answer. The short system prompt stands in for the agents' full prompts, so a fine-tuned model learns the rules from the examples.
+- **`preferences.language`** is the name of the language of the user's last recognised question. The default is `English`.
+- **TTL.** The profile is deleted 90 days after its last change (`cosmos.profile_ttl_seconds` in `config.yaml`). Every write restarts the countdown, so only inactive profiles expire, together with their conversation history.
+- A Cosmos DB document can be up to 2 MB, which is enough for a few hundred long answers per user.
+
+### Language detection
+
+After every answer, `save_response_and_preferences()` calls `AzureNLPService.extract_preferences()` on the user's question. It uses Azure AI Language language detection and returns, for example, `{"language": "Polish"}`. `CosmosMemory.add_conversation()` then appends the conversation record and merges the preferences in a single write.
+
+If the language can't be recognised (very short text such as *"ok"* returns `(Unknown)`) or the service call fails, the preference is left out and the stored value stays unchanged.
+
+`extract_preferences()` is the place to add further preferences learned from the user's messages. `AzureNLPService` already has methods for PII redaction, named entity recognition, key phrase extraction and sentiment analysis (with the escalation threshold from `nlp.sentiment_analysis` in `config.yaml`); they are not used by the chat yet. The stored preferences aren't passed to the agents yet either.
 
 ---
 
@@ -471,26 +581,33 @@ Edit `config.yaml` and run the agent deployment scripts again. The policy is cre
 
 ## Clean-up
 
-To stop incurring costs, delete the resource group. Then purge the two soft-deleted Cognitive Services accounts: the Foundry account, so its name can be reused, and the Speech account, because a soft-deleted free (F0) Speech resource still counts towards the limit of one per subscription for 48 hours.
+To stop incurring costs, delete the resource group. Some resources stay soft-deleted afterwards and block their names, or the free-tier limits, until they are purged:
+
+| Resource | Soft-deleted for | Why purge it |
+|---|---|---|
+| Foundry account | 48 hours | Reuse the name and custom subdomain |
+| Speech (F0) | 48 hours | Still counts towards the limit of one free Speech resource per subscription |
+| Language (F0) | 48 hours | Still counts towards the limit of one free Language resource per subscription |
+| Key Vault | 7 days | Reuse the vault name (possible only while purge protection is off) |
+
+Cosmos DB, AI Search and Storage are deleted immediately.
+
+Use the region the resources were deployed to as `<location>`:
 
 ```powershell
 az group delete --name <resource-group> --yes
 
-az cognitiveservices account purge `
-  --location <location> `
-  --resource-group <resource-group> `
-  --name <foundry-resource-name>
-
-az cognitiveservices account purge `
-  --location <location> `
-  --resource-group <resource-group> `
-  --name <prefix>-speech
+az cognitiveservices account purge --location <location> --resource-group <resource-group> --name <foundry-resource-name>
+az cognitiveservices account purge --location <location> --resource-group <resource-group> --name <prefix>-speech
+az cognitiveservices account purge --location <location> --resource-group <resource-group> --name <prefix>-language
+az keyvault purge --name <key-vault-name> --location <location>
 ```
 
-To see which accounts are still soft-deleted:
+To see what is still soft-deleted:
 
 ```powershell
 az cognitiveservices account list-deleted --output table
+az keyvault list-deleted --resource-type vault --output table
 ```
 
 To list failed deployment operations when troubleshooting a deployment:
