@@ -7,6 +7,7 @@ param llmModelDeploymentName string = '${projectPrefix}-llm-deploy'
 param llmMiniModelDeploymentName string = '${projectPrefix}-llm-mini-deploy'
 param embeddingModelDeploymentName string = '${projectPrefix}-embedding-deploy'
 param aiSearchName string = '${projectPrefix}-aisearch'
+param languageName string = '${projectPrefix}-language'
 // Storage account names: 3-24 lowercase letters and digits, globally unique
 param storageName string = take(toLower(replace('${projectPrefix}st', '-', '')), 24)
 param blobContainerName string = 'travel-guide'
@@ -19,6 +20,10 @@ param knowledgeBaseConnectionName string = '${knowledgeBaseName}-mcp'
 param userPrincipalId string
 param location string = resourceGroup().location
 param speechName string = '${projectPrefix}-speech'
+// Cosmos DB account names: 3-44 lowercase letters, digits and hyphens, globally unique
+param cosmosDbAccountName string = '${projectPrefix}-cosmos'
+param databaseName string = '${projectPrefix}-cosmosdb'
+param containerName string = '${projectPrefix}-container'
 // Third-party API keys: scripts/01_resource_deployment.sh passes them from .env (VISUAL_CROSSING_API_KEY, TAVILY_API_KEY).
 // Required: the deployment fails when a value is missing or empty.
 @secure()
@@ -235,6 +240,117 @@ resource speech 'Microsoft.CognitiveServices/accounts@2026-05-01' = {
 }
 
 /*
+  Azure AI Language service for Natural Language Processing (NLP)
+  Provides: Language detection, PII redaction, NER, key phrase extraction, sentiment analysis
+*/
+resource language 'Microsoft.CognitiveServices/accounts@2026-05-01' = {
+  name: languageName
+  location: location
+  identity: {
+    type: 'SystemAssigned'
+  }
+  sku: {
+    name: 'F0' // Free tier, change to 'S0' for production use
+  }
+  kind: 'TextAnalytics'  // Language service uses 'TextAnalytics' kind
+  properties: {
+    customSubDomainName: languageName
+    disableLocalAuth: false
+  }
+}
+
+/*
+  Azure Cosmos DB for long-term conversation history storage
+  Using Free Tier when available (25GB storage + 1000 RU/s free)
+*/
+resource cosmosDbAccount 'Microsoft.DocumentDB/databaseAccounts@2026-03-15' = {
+  name: toLower(cosmosDbAccountName)  // Cosmos DB names must be lowercase
+  location: location
+  properties: {
+    enableFreeTier: true               // FREE TIER ENABLED - 25GB + 1000 RU/s free
+    databaseAccountOfferType: 'Standard'
+    consistencyPolicy: {
+      defaultConsistencyLevel: 'Session'  // Perfect for conversation scenarios
+    }
+    locations: [
+      {
+        locationName: location
+        failoverPriority: 0
+      }
+    ]
+    enableAutomaticFailover: false      // Disabled for free tier optimization
+    publicNetworkAccess: 'Enabled'
+    disableLocalAuth: false
+    capabilities: []                    // No additional capabilities for free tier
+  }
+  identity: {
+    type: 'SystemAssigned'
+  }
+  tags: {
+    environment: 'development'
+    purpose: 'conversation-history-for-ai-agent'
+  }
+}
+
+// Database for storing conversation history
+resource cosmosDatabase 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases@2026-03-15' = {
+  parent: cosmosDbAccount
+  name: databaseName
+  properties: {
+    resource: {
+      id: databaseName
+    }
+    options: {
+      throughput: 1000  // This will be FREE under the free tier (first 1000 RU/s)
+    }
+  }
+}
+
+// Container for conversation threads with optimized partition key for chat history
+resource cosmosContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2026-03-15' = {
+  parent: cosmosDatabase
+  name: containerName
+  properties: {
+    resource: {
+      id: containerName
+      partitionKey: {
+        paths: [
+          '/userId'     // Partition by user ID for efficient querying of user history
+        ]
+        kind: 'Hash'
+      }
+      indexingPolicy: {
+        indexingMode: 'consistent'
+        includedPaths: [
+          {
+            path: '/*'  // Index all fields for flexible querying
+          }
+        ]
+        excludedPaths: [
+          {
+            path: '/"_etag"/?'  // Exclude etag from indexing
+          }
+        ]
+        // Add composite indexes for time-based queries
+        compositeIndexes: [
+          [
+            {
+              path: '/userId'
+              order: 'ascending'
+            }
+            {
+              path: '/last_updated'  // set by CosmosMemory on every save
+              order: 'descending'
+            }
+          ]
+        ]
+      }
+      // Optional: Add TTL for automatic cleanup of old conversations (90 days)
+      defaultTtl: 7776000  // 90 days in seconds (comment out if you want to keep forever)
+    }
+  }
+}
+/*
   Azure Key Vault for secure secret storage
   Stores: API keys, endpoints, connection strings, etc.
 */
@@ -357,6 +473,12 @@ var settingSecrets = {
   'AZURE-SUBSCRIPTION-ID': subscription().subscriptionId
   'AZURE-RESOURCE-GROUP': resourceGroup().name
   'AZURE-COGNITIVE-ACCOUNT-NAME': aiFoundry.name
+  // Long-term user memory (CosmosMemory)
+  'COSMOSDB-ENDPOINT': 'https://${cosmosDbAccount.name}.documents.azure.com:443/'
+  'COSMOSDB-DATABASE-NAME': cosmosDatabase.name
+  'COSMOSDB-CONTAINER-NAME': cosmosContainer.name
+  // NLP preprocessing (AzureNLPService)
+  'LANGUAGE-ENDPOINT': 'https://${language.name}.cognitiveservices.azure.com/'
 }
 
 resource settingSecret 'Microsoft.KeyVault/vaults/secrets@2026-02-01' = [for setting in items(settingSecrets): {
@@ -399,6 +521,26 @@ resource storageConnectionStringSecret 'Microsoft.KeyVault/vaults/secrets@2026-0
   }
 }
 
+
+// The local client calls the Language service (AzureNLPService)
+resource languageKeySecret 'Microsoft.KeyVault/vaults/secrets@2026-02-01' = {
+  parent: keyVault
+  name: 'LANGUAGE-KEY'
+  properties: {
+    value: language.listKeys().key1
+    contentType: 'text/plain'
+  }
+}
+
+// The local client reads and writes user profiles in Cosmos DB
+resource cosmosDbKeySecret 'Microsoft.KeyVault/vaults/secrets@2026-02-01' = {
+  parent: keyVault
+  name: 'COSMOSDB-PRIMARY-KEY'
+  properties: {
+    value: cosmosDbAccount.listKeys().primaryMasterKey
+    contentType: 'text/plain'
+  }
+}
 // Third-party API keys from .env
 resource visualCrossingApiKeySecret 'Microsoft.KeyVault/vaults/secrets@2026-02-01' = {
   parent: keyVault
@@ -417,6 +559,7 @@ resource tavilyApiKeySecret 'Microsoft.KeyVault/vaults/secrets@2026-02-01' = {
     contentType: 'text/plain'
   }
 }
+
 
 // ------------------------------------------------------------------ outputs (values for .env)
 // Everything else is read from Key Vault

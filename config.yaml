@@ -23,3 +23,10 @@ guardrails:
       code: true
       text: true
       action: "Block"
+
+cosmos:
+  profile_ttl_seconds: 7776000 # 90 days
+
+nlp:
+  sentiment_analysis:
+    sentiment_escalation_threshold: 0.5

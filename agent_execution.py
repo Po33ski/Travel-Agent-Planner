@@ -1,26 +1,30 @@
 import os
-import json
 import asyncio
 import logging
-from pathlib import Path
 from azure.identity import DefaultAzureCredential
+from azure.core.credentials import AzureKeyCredential
 from agent_framework.foundry import FoundryAgent
 from agent_framework.orchestrations import MagenticBuilder
 from agent_framework import FunctionInvocationContext
 from agent_framework.exceptions import ChatClientContentFilterException
 from azure.keyvault.secrets import SecretClient
+from azure.cosmos import CosmosClient
+from azure.ai.textanalytics import TextAnalyticsClient
+import yaml
 from classes.weather_services import get_forecast_weather
 from classes.hotel_services import search_for_hotels
 from classes.speech_services import text_to_speech
 from classes.secret_manager_services import SecretManager
+from classes.cosmos_memory_services import CosmosMemory
+from classes.azure_nlp_services import AzureNLPService
 
 # WARNING shows tool-loop problems such as "Maximum consecutive function call errors reached"
 logging.getLogger("agent_framework").setLevel(logging.WARNING)
 
 agent_name = os.getenv("AGENT_NAME")
 
-# User requests and final answers collected as fine-tuning examples
-RESPONSES_FILE = Path("outputs") / "responses.json"
+# User requests and final answers are collected as fine-tuning examples in the user's
+# conversation_history in Cosmos DB.
 # Short stand-in for the agents' full system prompts: a fine-tuned model should learn
 # the detailed rules from the examples instead of reading them in every prompt
 FINE_TUNING_SYSTEM_PROMPT = (
@@ -37,9 +41,10 @@ FINE_TUNING_SYSTEM_PROMPT = (
 
 key_vault_url = os.getenv("KEY_VAULT_URL")
 region = os.getenv("REGION")
-# user_name = os.getenv("USER_NAME")
-# user_role = os.getenv("USER_ROLE")
-
+# The user name is asked for at start-up; the role comes from launch.json for now
+user_role = os.getenv("USER_ROLE")
+with open("config.yaml", "r") as file:
+    config = yaml.safe_load(file)
 # =============================================================================
 # AUTHENTICATION
 # =============================================================================
@@ -48,8 +53,36 @@ credential = DefaultAzureCredential()
 secret_client = SecretClient(vault_url=key_vault_url, credential=credential)
 secret_manager = SecretManager(secret_client)
 
+language_client = TextAnalyticsClient(
+    endpoint=secret_manager.get_secret("LANGUAGE-ENDPOINT"),
+    credential=AzureKeyCredential(secret_manager.get_secret("LANGUAGE-KEY")),
+)
+# Recognises user preferences (for now the language) in the user's messages
+nlp_service = AzureNLPService(language_client, config)
+cosmos_db_client = CosmosClient(
+    url=secret_manager.get_secret("COSMOSDB-ENDPOINT"),
+    credential=secret_manager.get_secret("COSMOSDB-PRIMARY-KEY"),
+)
+database_client = cosmos_db_client.get_database_client(
+    secret_manager.get_secret("COSMOSDB-DATABASE-NAME")
+)
+if database_client.read():
+    print("Successfully connected to Cosmos DB database")
+container_client = database_client.get_container_client(
+    secret_manager.get_secret("COSMOSDB-CONTAINER-NAME")
+)
+if container_client.read():
+    print("Successfully connected to Cosmos DB container")
 # Secret name = setting name with '-' instead of '_' (see resource_deployment.bicep)
 endpoint = secret_manager.get_secret("PROJECT-ENDPOINT")
+
+# Instantiate CosmosMemory class
+cosmos_memory = CosmosMemory(
+    cosmos_client=cosmos_db_client,
+    database_client=database_client,
+    container_client=container_client,
+    config=config,
+)
 
 
 async def log_tool_calls(context: FunctionInvocationContext, call_next):
@@ -120,11 +153,14 @@ def create_workflow(manager_agent, participants):
     return workflow_agent
 
 
-def save_response(user_text: str, assistant_text: str) -> None:
-    """Append one user request and the workflow's final answer to responses.json.
+def save_response_and_preferences(user_id: str, user_text: str, assistant_text: str) -> None:
+    """Append one user request and the workflow's final answer to the user's conversation_history
+    and save the preferences Azure AI Language recognises in the request (for now the language).
 
     Each record uses the chat fine-tuning format: a system, a user and an assistant message.
     """
+    preferences = nlp_service.extract_preferences(user_text)
+
     record = {
         "messages": [
             {"role": "system", "content": FINE_TUNING_SYSTEM_PROMPT},
@@ -132,29 +168,25 @@ def save_response(user_text: str, assistant_text: str) -> None:
             {"role": "assistant", "content": assistant_text},
         ]
     }
+    cosmos_memory.add_conversation(user_id, record, preferences)
 
-    try:
-        records = []
-        if RESPONSES_FILE.exists() and RESPONSES_FILE.stat().st_size > 0:
-            records = json.loads(RESPONSES_FILE.read_text(encoding="utf-8"))
-        records.append(record)
 
-        RESPONSES_FILE.parent.mkdir(parents=True, exist_ok=True)
-        RESPONSES_FILE.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"[DATA] Saved example {len(records)} to {RESPONSES_FILE}")
-    except (OSError, json.JSONDecodeError) as e:
-        # A broken file is left untouched so earlier examples are not overwritten
-        print(f"[DATA] Could not save the example to {RESPONSES_FILE}: {e}")
+def ask_user_name() -> str | None:
+    """Ask for the user name until a non-empty one is given; None when the user quits."""
+    while True:
+        try:
+            user_name = input("User name: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return None
+        if user_name:
+            return user_name
+        print("The user name is required.")
 
 
 # Microsoft Agent Frame is built entirely on async programming.
 # agent.run() is an async method, so you need to run it in an async context.
-async def run_workflow(manager_agent, participants):
+async def run_workflow(manager_agent, participants, user_id: str):
     print("Interactive workflow-agent mode started. Type 'exit' or 'quit' to stop.\n")
-
-    # Create a server-side session to keep conversation history across turns
-    # session = await agent.create_conversation()
-    # print(f"Started session ID: {session}")
 
     while True:
         try:
@@ -188,7 +220,7 @@ async def run_workflow(manager_agent, participants):
             print(final_text)
             print("=" * 50)
 
-            save_response(user_message_text, final_text)
+            save_response_and_preferences(user_id, user_message_text, final_text)
 
             speech_result = text_to_speech(final_text)
             print("\n" + "=" * 50)
@@ -209,9 +241,17 @@ async def run_workflow(manager_agent, participants):
 
 
 def main() -> int:
+    # The user has to give a name before the agents start
+    user_name = ask_user_name()
+    if user_name is None:
+        print("\nExiting.")
+        return 1
+
     try:
+        # Known name: the stored user id; first visit: a new id and profile
+        user_id = cosmos_memory.get_or_create_user(user_name, user_role)
         manager_agent, participants = create_agents()
-        asyncio.run(run_workflow(manager_agent, participants))
+        asyncio.run(run_workflow(manager_agent, participants, user_id))
         return 0
     except Exception as e:
         print(f"\n❌ Execution failed: {str(e)}")

@@ -25,6 +25,9 @@ az deployment group show `
 --name resource_deployment `
 --query properties.outputs
 
+
+############################################################################################################################
+# For use without the Azure Key Vault
 # Get the keys for .env (never commit them)
 # STORAGE_CONNECTION_STRING - Search indexer reads the blob container
 az storage account show-connection-string `

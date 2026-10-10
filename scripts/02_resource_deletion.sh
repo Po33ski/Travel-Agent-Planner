@@ -19,3 +19,12 @@ az cognitiveservices account purge `
     --location swedencentral `
     --resource-group aiagent-travel9871v4-rg `
     --name aiagent-travel9871v4-speech
+
+# Find all soft-deleted Key Vaults in the region (to confirm deletion)
+az keyvault list-deleted
+
+# Find when the key vault will be permanently deleted (scheduled purge date)
+az keyvault list-deleted --resource-type vault --query "[?name=='aiagent-travel9871v4-kvault'].properties.scheduledPurgeDate"
+
+# (NO LONDER WORKERS) The following command permanently deletes the soft-deleted Key Vault.
+az keyvault purge --name aiagent-travel9871v4-kvault --location swedencentral

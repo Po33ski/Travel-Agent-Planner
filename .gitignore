@@ -3,4 +3,5 @@
 launch.json
 responses.json
 tutorials/
-_pycache__/
+__pycache__/
+*.pyc
