@@ -1,6 +1,16 @@
 import os
 import azure.cognitiveservices.speech as speechsdk
 from agent_framework import tool
+from azure.identity import DefaultAzureCredential
+from azure.keyvault.secrets import SecretClient
+
+from classes.secret_manager_services import SecretManager
+
+# Same Key Vault mechanism as in agent_execution.py
+key_vault_url = os.getenv("KEY_VAULT_URL")
+credential = DefaultAzureCredential()
+secret_client = SecretClient(vault_url=key_vault_url, credential=credential)
+secret_manager = SecretManager(secret_client)
 
 
 class AzureSpeechService:
@@ -85,8 +95,11 @@ def text_to_speech(
 ) -> str:
     print(f"\n🛠️ [LOCAL TOOL EXECUTION] Dispatching TTS to AzureSpeechService...")
 
-    resolved_key = os.getenv("SPEECH_KEY")
-    resolved_region = os.getenv("SPEECH_REGION")
+    try:
+        resolved_key = secret_manager.get_secret("SPEECH-KEY")
+        resolved_region = secret_manager.get_secret("SPEECH-REGION")
+    except Exception as error:
+        return f"ERROR: Speech service is not configured: {error}"
 
     speech_sdk_config = speechsdk.SpeechConfig(
         subscription=resolved_key, region=resolved_region

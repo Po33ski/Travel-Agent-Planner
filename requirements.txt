@@ -10,3 +10,4 @@ azure-search-documents>=12.1.0b2
 azure-mgmt-cognitiveservices
 azure-cognitiveservices-speech
 tavily-python>=0.5.0
+azure-keyvault-secrets==4.11.0

@@ -3,28 +3,42 @@ import sys
 import logging
 
 from azure.identity import DefaultAzureCredential
+from azure.keyvault.secrets import SecretClient
 from azure.search.documents.indexes import SearchIndexClient
 from azure.storage.blob import ContainerClient
 
 from classes.foundry_iq_services import FoundryIQService
+from classes.secret_manager_services import SecretManager
 
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
 
-# Values come from the outputs of resource_deployment.bicep
-search_endpoint = os.getenv("SEARCH_ENDPOINT")
-storage_account_url = os.getenv("STORAGE_ACCOUNT_URL")
-blob_container_name = os.getenv("BLOB_CONTAINER_NAME", "travel-guide")
-aoai_endpoint = os.getenv("AOAI_ENDPOINT")
-llm_model_deployment_name = os.getenv("LLM_MINI_MODEL_DEPLOYMENT_NAME")
-embedding_model_deployment_name = os.getenv("EMBEDDING_MODEL_DEPLOYMENT_NAME")
-knowledge_base_name = os.getenv("KNOWLEDGE_BASE_NAME", "travel-guide-kb")
+key_vault_url = os.getenv("KEY_VAULT_URL")
+# Local settings, not stored in Key Vault
 knowledge_source_name = os.getenv("KNOWLEDGE_SOURCE_NAME", "travel-guide-ks")
 source_file_path = os.getenv("SOURCE_FILE_PATH")
-# Secrets from .env: keys Azure AI Search uses to reach Storage and the models
-storage_connection_string = os.getenv("STORAGE_CONNECTION_STRING")
-aoai_api_key = os.getenv("AOAI_API_KEY")
+
+# =============================================================================
+# AUTHENTICATION
+# =============================================================================
+
+# Our own calls (Key Vault, upload, creating the knowledge source/base) use Entra ID (az login)
+credential = DefaultAzureCredential()
+secret_client = SecretClient(vault_url=key_vault_url, credential=credential)
+secret_manager = SecretManager(secret_client)
+
+# Secret name = setting name with '-' instead of '_' (see resource_deployment.bicep)
+search_endpoint = secret_manager.get_secret("SEARCH-ENDPOINT")
+storage_account_url = secret_manager.get_secret("STORAGE-ACCOUNT-URL")
+blob_container_name = secret_manager.get_secret("BLOB-CONTAINER-NAME")
+aoai_endpoint = secret_manager.get_secret("AOAI-ENDPOINT")
+llm_model_deployment_name = secret_manager.get_secret("LLM-MINI-MODEL-DEPLOYMENT-NAME")
+embedding_model_deployment_name = secret_manager.get_secret("EMBEDDING-MODEL-DEPLOYMENT-NAME")
+knowledge_base_name = secret_manager.get_secret("KNOWLEDGE-BASE-NAME")
+# Keys Azure AI Search uses to reach Storage and the models
+storage_connection_string = secret_manager.get_secret("STORAGE-CONNECTION-STRING")
+aoai_api_key = secret_manager.get_secret("AOAI-API-KEY")
 
 # Model names must match the deployments in resource_deployment.bicep
 LLM_MODEL_NAME = "gpt-5-mini"
@@ -58,13 +72,10 @@ def main() -> int:
 
     missing = [name for name, value in REQUIRED_SETTINGS.items() if not value]
     if missing:
-        print(f"❌ Missing environment variables: {', '.join(missing)}")
+        print(f"❌ Missing settings: {', '.join(missing)}")
         return 1
 
     try:
-        # Our own calls (upload, creating the knowledge source/base) use Entra ID (az login)
-        credential = DefaultAzureCredential()
-
         service = FoundryIQService(
             container_client=ContainerClient(
                 account_url=storage_account_url,

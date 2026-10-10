@@ -8,18 +8,16 @@ from agent_framework.foundry import FoundryAgent
 from agent_framework.orchestrations import MagenticBuilder
 from agent_framework import FunctionInvocationContext
 from agent_framework.exceptions import ChatClientContentFilterException
+from azure.keyvault.secrets import SecretClient
 from classes.weather_services import get_forecast_weather
 from classes.hotel_services import search_for_hotels
 from classes.speech_services import text_to_speech
-
+from classes.secret_manager_services import SecretManager
 
 # WARNING shows tool-loop problems such as "Maximum consecutive function call errors reached"
 logging.getLogger("agent_framework").setLevel(logging.WARNING)
 
-endpoint = os.getenv("PROJECT_ENDPOINT")
 agent_name = os.getenv("AGENT_NAME")
-resolved_key = os.getenv("SPEECH_KEY")
-resolved_region = os.getenv("SPEECH_REGION")
 
 # User requests and final answers collected as fine-tuning examples
 RESPONSES_FILE = Path("outputs") / "responses.json"
@@ -30,10 +28,29 @@ FINE_TUNING_SYSTEM_PROMPT = (
     "web search, weather forecasts and hotel search, and you never invent facts."
 )
 
-credential = DefaultAzureCredential()
 # =============================================================================
 # AGENT INITIALIZATION
 # =============================================================================
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+
+key_vault_url = os.getenv("KEY_VAULT_URL")
+region = os.getenv("REGION")
+# user_name = os.getenv("USER_NAME")
+# user_role = os.getenv("USER_ROLE")
+
+# =============================================================================
+# AUTHENTICATION
+# =============================================================================
+
+credential = DefaultAzureCredential()
+secret_client = SecretClient(vault_url=key_vault_url, credential=credential)
+secret_manager = SecretManager(secret_client)
+
+# Secret name = setting name with '-' instead of '_' (see resource_deployment.bicep)
+endpoint = secret_manager.get_secret("PROJECT-ENDPOINT")
+
 
 async def log_tool_calls(context: FunctionInvocationContext, call_next):
     print(f"[TOOL] -> {context.function.name}({context.arguments})")

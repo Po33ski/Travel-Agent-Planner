@@ -8,22 +8,35 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from azure.identity import DefaultAzureCredential
+from azure.keyvault.secrets import SecretClient
 from azure.ai.projects import AIProjectClient
 from azure.ai.projects.models import PromptAgentDefinition
 from azure.core.exceptions import HttpResponseError
 
 from classes.rai_policies_services import RaiPolicyManager
+from classes.secret_manager_services import SecretManager
 
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
 
-project_endpoint = os.getenv("PROJECT_ENDPOINT")
-llm_model_deployment_name = os.getenv("LLM_MODEL_DEPLOYMENT_NAME")
+key_vault_url = os.getenv("KEY_VAULT_URL")
 
-subscription_id = os.getenv("AZURE_SUBSCRIPTION_ID")
-resource_group_name = os.getenv("AZURE_RESOURCE_GROUP")
-account_name = os.getenv("AZURE_COGNITIVE_ACCOUNT_NAME")
+# =============================================================================
+# AUTHENTICATION
+# =============================================================================
+
+credential = DefaultAzureCredential()
+secret_client = SecretClient(vault_url=key_vault_url, credential=credential)
+secret_manager = SecretManager(secret_client)
+
+# Secret name = setting name with '-' instead of '_' (see resource_deployment.bicep)
+project_endpoint = secret_manager.get_secret("PROJECT-ENDPOINT")
+llm_model_deployment_name = secret_manager.get_secret("LLM-MODEL-DEPLOYMENT-NAME")
+
+subscription_id = secret_manager.get_secret("AZURE-SUBSCRIPTION-ID")
+resource_group_name = secret_manager.get_secret("AZURE-RESOURCE-GROUP")
+account_name = secret_manager.get_secret("AZURE-COGNITIVE-ACCOUNT-NAME")
 
 # Guardrails (RAI policy) shared by all agents
 config_path = PROJECT_ROOT / "config.yaml"
@@ -95,9 +108,6 @@ def main() -> int:
     print("=" * 60)
 
     try:
-        # Initialize client via context manager
-        credential = DefaultAzureCredential()
-
         # Create or update the RAI policy and get its rai_config to attach to the agent
         rai_manager = RaiPolicyManager(
             subscription_id=subscription_id,

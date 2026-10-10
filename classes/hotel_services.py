@@ -2,7 +2,17 @@ import os
 from typing import Any, Dict
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from agent_framework import tool
+from azure.identity import DefaultAzureCredential
+from azure.keyvault.secrets import SecretClient
 from tavily import TavilyClient
+
+from classes.secret_manager_services import SecretManager
+
+# Same Key Vault mechanism as in agent_execution.py
+key_vault_url = os.getenv("KEY_VAULT_URL")
+credential = DefaultAzureCredential()
+secret_client = SecretClient(vault_url=key_vault_url, credential=credential)
+secret_manager = SecretManager(secret_client)
 
 
 # Booking.com renders prices in whatever currency/language is selected via
@@ -142,9 +152,10 @@ def search_for_hotels(
         Dict with "target_currency" and "results" (url, title, content, score, is_direct),
         or {"error": "..."} if the call failed.
     """
-    api_key = os.getenv("TAVILY_API_KEY")
-    if not api_key:
-        return {"error": "Hotel search API key (TAVILY_API_KEY) is not configured."}
+    try:
+        api_key = secret_manager.get_secret("TAVILY-API-KEY")
+    except Exception:
+        return {"error": "Hotel search API key (TAVILY-API-KEY) is not configured."}
 
     hotel_service = HotelService(api_key)
     return hotel_service.search_hotels(city, check_in, check_out, language)

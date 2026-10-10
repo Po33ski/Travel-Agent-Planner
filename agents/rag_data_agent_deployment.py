@@ -8,28 +8,41 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from azure.identity import DefaultAzureCredential
+from azure.keyvault.secrets import SecretClient
 from azure.ai.projects import AIProjectClient
 from azure.ai.projects.models import PromptAgentDefinition
 from azure.core.exceptions import HttpResponseError
 
 from classes.foundry_iq_services import FoundryIQService
 from classes.rai_policies_services import RaiPolicyManager
+from classes.secret_manager_services import SecretManager
 
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
 
-project_endpoint = os.getenv("PROJECT_ENDPOINT")
-# Specialist agents use the smaller model; only the manager uses LLM_MODEL_DEPLOYMENT_NAME
-llm_model_deployment_name = os.getenv("LLM_MINI_MODEL_DEPLOYMENT_NAME")
-# Foundry IQ knowledge base (values from the resource_deployment.bicep outputs)
-search_endpoint = os.getenv("SEARCH_ENDPOINT")
-knowledge_base_name = os.getenv("KNOWLEDGE_BASE_NAME", "travel-guide-kb")
-knowledge_base_connection_name = os.getenv("KNOWLEDGE_BASE_CONNECTION_NAME", "travel-guide-kb-mcp")
+key_vault_url = os.getenv("KEY_VAULT_URL")
 
-subscription_id = os.getenv("AZURE_SUBSCRIPTION_ID")
-resource_group_name = os.getenv("AZURE_RESOURCE_GROUP")
-account_name = os.getenv("AZURE_COGNITIVE_ACCOUNT_NAME")
+# =============================================================================
+# AUTHENTICATION
+# =============================================================================
+
+credential = DefaultAzureCredential()
+secret_client = SecretClient(vault_url=key_vault_url, credential=credential)
+secret_manager = SecretManager(secret_client)
+
+# Secret name = setting name with '-' instead of '_' (see resource_deployment.bicep)
+project_endpoint = secret_manager.get_secret("PROJECT-ENDPOINT")
+# Specialist agents use the smaller model; only the manager uses LLM-MODEL-DEPLOYMENT-NAME
+llm_model_deployment_name = secret_manager.get_secret("LLM-MINI-MODEL-DEPLOYMENT-NAME")
+# Foundry IQ knowledge base
+search_endpoint = secret_manager.get_secret("SEARCH-ENDPOINT")
+knowledge_base_name = secret_manager.get_secret("KNOWLEDGE-BASE-NAME")
+knowledge_base_connection_name = secret_manager.get_secret("KNOWLEDGE-BASE-CONNECTION-NAME")
+
+subscription_id = secret_manager.get_secret("AZURE-SUBSCRIPTION-ID")
+resource_group_name = secret_manager.get_secret("AZURE-RESOURCE-GROUP")
+account_name = secret_manager.get_secret("AZURE-COGNITIVE-ACCOUNT-NAME")
 
 # Guardrails (RAI policy) shared by all agents
 config_path = PROJECT_ROOT / "config.yaml"
@@ -115,13 +128,10 @@ def main() -> int:
     print("=" * 60)
 
     if not search_endpoint:
-        print("❌ Missing environment variable: SEARCH_ENDPOINT (required for the knowledge base tool)")
+        print("❌ Missing secret: SEARCH-ENDPOINT (required for the knowledge base tool)")
         return 1
 
     try:
-        # Initialize client via context manager
-        credential = DefaultAzureCredential()
-
         # Create or update the RAI policy and get its rai_config to attach to the agent
         rai_manager = RaiPolicyManager(
             subscription_id=subscription_id,

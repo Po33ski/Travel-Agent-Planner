@@ -3,9 +3,18 @@ import os
 from typing import Any, Dict
 from urllib.parse import quote
 from agent_framework import tool
+from azure.identity import DefaultAzureCredential
+from azure.keyvault.secrets import SecretClient
 import requests
 
+from classes.secret_manager_services import SecretManager
 from utils.utils import normalize_sunrise_sunset
+
+# Same Key Vault mechanism as in agent_execution.py
+key_vault_url = os.getenv("KEY_VAULT_URL")
+credential = DefaultAzureCredential()
+secret_client = SecretClient(vault_url=key_vault_url, credential=credential)
+secret_manager = SecretManager(secret_client)
 
 API_HTTP = "https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/"
 
@@ -92,8 +101,9 @@ def get_forecast_weather(location: str, start_date: str | None = None, end_date:
     Returns:
         Dict containing weather data from API, or {"error": "..."} if the call failed.
     """
-    api_key = os.getenv("VISUAL_CROSSING_API_KEY")
-    if not api_key:
+    try:
+        api_key = secret_manager.get_secret("VISUAL-CROSSING-API-KEY")
+    except Exception:
         return {"error": "Weather service API key is not configured."}
 
     weather_service = WeatherService(api_key)
@@ -111,8 +121,9 @@ def get_current_weather(location: str) -> Dict[str, Any]:
     Returns:
         Dict containing weather data from API, or {"error": "..."} if the call failed.
     """
-    api_key = os.getenv("VISUAL_CROSSING_API_KEY")
-    if not api_key:
+    try:
+        api_key = secret_manager.get_secret("VISUAL-CROSSING-API-KEY")
+    except Exception:
         return {"error": "Weather service API key is not configured."}
 
     weather_service = WeatherService(api_key)

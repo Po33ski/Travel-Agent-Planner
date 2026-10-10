@@ -10,6 +10,8 @@ param aiSearchName string = '${projectPrefix}-aisearch'
 // Storage account names: 3-24 lowercase letters and digits, globally unique
 param storageName string = take(toLower(replace('${projectPrefix}st', '-', '')), 24)
 param blobContainerName string = 'travel-guide'
+// Key Vault names: 3-24 letters, digits and hyphens, globally unique
+param keyVaultName string = '${take(projectPrefix, 21)}-kv'
 // Must match the knowledge base created by rag_setup.py
 param knowledgeBaseName string = 'travel-guide-kb'
 param knowledgeBaseConnectionName string = '${knowledgeBaseName}-mcp'
@@ -17,6 +19,14 @@ param knowledgeBaseConnectionName string = '${knowledgeBaseName}-mcp'
 param userPrincipalId string
 param location string = resourceGroup().location
 param speechName string = '${projectPrefix}-speech'
+// Third-party API keys: scripts/01_resource_deployment.sh passes them from .env (VISUAL_CROSSING_API_KEY, TAVILY_API_KEY).
+// Required: the deployment fails when a value is missing or empty.
+@secure()
+@minLength(1)
+param visualCrossingApiKey string
+@secure()
+@minLength(1)
+param tavilyApiKey string
 
 var knowledgeBaseApiVersion = '2026-08-01-preview'
 
@@ -28,6 +38,7 @@ var roles = {
   searchIndexDataReader: '1407120a-92aa-4202-b7e9-c0e197c71c8f'
   searchIndexDataContributor: '8ebe5a00-799e-43f5-93ac-243d3dce84a7'
   searchServiceContributor: '7ca78c08-252a-4471-8644-bb5ff32d4ba0'
+  keyVaultSecretsUser: '4633458b-17de-408a-b874-0445c86b69e6'
 }
 
 /*
@@ -223,6 +234,27 @@ resource speech 'Microsoft.CognitiveServices/accounts@2026-05-01' = {
   }
 }
 
+/*
+  Azure Key Vault for secure secret storage
+  Stores: API keys, endpoints, connection strings, etc.
+*/
+resource keyVault 'Microsoft.KeyVault/vaults@2026-02-01' = {
+  name: keyVaultName
+  location: location
+  properties: {
+    sku: {
+      family: 'A'
+      name: 'standard'
+    }
+    tenantId: subscription().tenantId
+    enableRbacAuthorization: true  // Use RBAC for access control
+    softDeleteRetentionInDays: 7
+    // Purge protection cannot be turned off again and blocks the vault name for the whole retention
+    // period after the resource group is deleted. Uncomment in production ('false' is not accepted).
+    // enablePurgeProtection: true
+  }
+}
+
 // ------------------------------------------------------------------ role assignments: service → service
 // Search reads documents from the blob container
 // roles asigned to the search service's managed identity, allowing it to read blob data from the storage account. 
@@ -294,19 +326,98 @@ resource userToSearchData 'Microsoft.Authorization/roleAssignments@2022-04-01' =
   }
 }
 
-// ------------------------------------------------------------------ outputs (values for rag_setup.py / launch.json)
-output projectEndpoint string = 'https://${aiFoundry.properties.customSubDomainName}.services.ai.azure.com/api/projects/${aiProject.name}'
-output aoaiEndpoint string = 'https://${aiFoundry.properties.customSubDomainName}.openai.azure.com'
-output llmModelDeploymentName string = llmModelDeployment.name
-output llmMiniModelDeploymentName string = llmMiniModelDeployment.name
-output embeddingModelDeploymentName string = embeddingModelDeployment.name
-output searchEndpoint string = 'https://${searchService.name}.search.windows.net'
-output storageAccountUrl string = storage.properties.primaryEndpoints.blob
-// Names for the key commands in scripts/01_resource_deployment.sh (keys are never output)
-output storageAccountName string = storage.name
-output aiFoundryName string = aiFoundry.name
-output blobContainerName string = container.name
-output knowledgeBaseName string = knowledgeBaseName
-output knowledgeBaseConnectionName string = kbConnection.name
-output speech_region string = location
-output speech_key string = speech.listKeys().key1
+// Read the secrets from Key Vault
+resource userToKeyVault 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: keyVault
+  name: guid(keyVault.id, userPrincipalId, roles.keyVaultSecretsUser)
+  properties: {
+    principalId: userPrincipalId
+    principalType: 'User'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.keyVaultSecretsUser)
+  }
+}
+
+// ------------------------------------------------------------------ Key Vault secrets
+// Secret name = environment variable name with '-' instead of '_' (secret names allow only letters, digits and '-').
+
+// Settings: endpoints and resource names
+var settingSecrets = {
+  'PROJECT-ENDPOINT': 'https://${aiFoundry.name}.services.ai.azure.com/api/projects/${aiProject.name}'
+  'AOAI-ENDPOINT': 'https://${aiFoundry.name}.openai.azure.com'
+  'LLM-MODEL-DEPLOYMENT-NAME': llmModelDeployment.name
+  'LLM-MINI-MODEL-DEPLOYMENT-NAME': llmMiniModelDeployment.name
+  'EMBEDDING-MODEL-DEPLOYMENT-NAME': embeddingModelDeployment.name
+  'SEARCH-ENDPOINT': 'https://${searchService.name}.search.windows.net'
+  'STORAGE-ACCOUNT-URL': 'https://${storage.name}.blob.${environment().suffixes.storage}/'
+  'BLOB-CONTAINER-NAME': container.name
+  'KNOWLEDGE-BASE-NAME': knowledgeBaseName
+  'KNOWLEDGE-BASE-CONNECTION-NAME': kbConnection.name
+  'SPEECH-REGION': location
+  // RAI policy deployment (management plane)
+  'AZURE-SUBSCRIPTION-ID': subscription().subscriptionId
+  'AZURE-RESOURCE-GROUP': resourceGroup().name
+  'AZURE-COGNITIVE-ACCOUNT-NAME': aiFoundry.name
+}
+
+resource settingSecret 'Microsoft.KeyVault/vaults/secrets@2026-02-01' = [for setting in items(settingSecrets): {
+  parent: keyVault
+  name: setting.key
+  properties: {
+    value: setting.value
+    contentType: 'text/plain'
+  }
+}]
+
+// Keys: read from the resources during deployment, so they never appear in code or outputs
+// The local client calls Speech
+resource speechKeySecret 'Microsoft.KeyVault/vaults/secrets@2026-02-01' = {
+  parent: keyVault
+  name: 'SPEECH-KEY'
+  properties: {
+    value: speech.listKeys().key1
+    contentType: 'text/plain'
+  }
+}
+
+// Search calls the embedding and chat models
+resource aoaiApiKeySecret 'Microsoft.KeyVault/vaults/secrets@2026-02-01' = {
+  parent: keyVault
+  name: 'AOAI-API-KEY'
+  properties: {
+    value: aiFoundry.listKeys().key1
+    contentType: 'text/plain'
+  }
+}
+
+// Search indexer reads the blob container
+resource storageConnectionStringSecret 'Microsoft.KeyVault/vaults/secrets@2026-02-01' = {
+  parent: keyVault
+  name: 'STORAGE-CONNECTION-STRING'
+  properties: {
+    value: 'DefaultEndpointsProtocol=https;AccountName=${storage.name};AccountKey=${storage.listKeys().keys[0].value};EndpointSuffix=${environment().suffixes.storage}'
+    contentType: 'text/plain'
+  }
+}
+
+// Third-party API keys from .env
+resource visualCrossingApiKeySecret 'Microsoft.KeyVault/vaults/secrets@2026-02-01' = {
+  parent: keyVault
+  name: 'VISUAL-CROSSING-API-KEY'
+  properties: {
+    value: visualCrossingApiKey
+    contentType: 'text/plain'
+  }
+}
+
+resource tavilyApiKeySecret 'Microsoft.KeyVault/vaults/secrets@2026-02-01' = {
+  parent: keyVault
+  name: 'TAVILY-API-KEY'
+  properties: {
+    value: tavilyApiKey
+    contentType: 'text/plain'
+  }
+}
+
+// ------------------------------------------------------------------ outputs (values for .env)
+// Everything else is read from Key Vault
+output KEY_VAULT_URL string = keyVault.properties.vaultUri
