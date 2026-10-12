@@ -4,6 +4,7 @@ param projectPrefix string
 param aiFoundryName string = projectPrefix
 param aiProjectName string = '${aiFoundryName}-proj'
 param llmModelDeploymentName string = '${projectPrefix}-llm-deploy'
+param llmTerraModelDeploymentName string = '${projectPrefix}-llm-terra-deploy'
 param llmMiniModelDeploymentName string = '${projectPrefix}-llm-mini-deploy'
 param embeddingModelDeploymentName string = '${projectPrefix}-embedding-deploy'
 param aiSearchName string = '${projectPrefix}-aisearch'
@@ -110,11 +111,31 @@ resource llmModelDeployment 'Microsoft.CognitiveServices/accounts/deployments@20
   }
 }
 
+resource llmTerraModelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2026-05-01'= {
+  parent: aiFoundry
+  name: llmTerraModelDeploymentName
+  dependsOn: [
+    llmModelDeployment  // Explicitly wait for LLM to finish first
+  ]
+  sku : {
+    capacity: 1000 // Rate limit in thousands of tokens per minute (50 = 50K TPM).
+    name: 'GlobalStandard'
+  }
+  properties: {
+    model:{
+      name: 'gpt-5.6-terra' // stronger and about 10x more expensive than gpt-5.6-luna; billed per token only when called
+      format: 'OpenAI'
+      version: '2026-07-09'
+    }
+  }
+}
+
+
 resource llmMiniModelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2026-05-01'= {
   parent: aiFoundry
   name: llmMiniModelDeploymentName
   dependsOn: [
-    llmModelDeployment  // Explicitly wait for LLM to finish first
+    llmTerraModelDeployment // Explicitly wait for LLM to finish first
   ]
   sku : {
     capacity: 1000 // Rate limit in thousands of tokens per minute (50 = 50K TPM).
@@ -138,7 +159,7 @@ resource embeddingModelDeployment 'Microsoft.CognitiveServices/accounts/deployme
     llmMiniModelDeployment  // Explicitly wait for LLM to finish first
   ]
   sku : {
-    capacity: 50 // 50K TPM, enough for the indexer to vectorise documents without constant throttling
+    capacity: 1000 // 50K TPM, enough for the indexer to vectorise documents without constant throttling
     name: 'GlobalStandard'
   }
   properties: {
@@ -461,6 +482,7 @@ var settingSecrets = {
   'PROJECT-ENDPOINT': 'https://${aiFoundry.name}.services.ai.azure.com/api/projects/${aiProject.name}'
   'AOAI-ENDPOINT': 'https://${aiFoundry.name}.openai.azure.com'
   'LLM-MODEL-DEPLOYMENT-NAME': llmModelDeployment.name
+  'LLM-TERRA-MODEL-DEPLOYMENT-NAME': llmTerraModelDeployment.name
   'LLM-MINI-MODEL-DEPLOYMENT-NAME': llmMiniModelDeployment.name
   'EMBEDDING-MODEL-DEPLOYMENT-NAME': embeddingModelDeployment.name
   'SEARCH-ENDPOINT': 'https://${searchService.name}.search.windows.net'

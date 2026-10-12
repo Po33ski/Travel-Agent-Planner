@@ -259,6 +259,7 @@ To use another region, change `--location` in `az group create`. Existing resour
 | `aiFoundryName` | `projectPrefix` | Foundry (AIServices) account name and custom subdomain |
 | `aiProjectName` | `<aiFoundryName>-proj` | Foundry project name |
 | `llmModelDeploymentName` | `<prefix>-llm-deploy` | `gpt-5.6-luna` deployment, used by the manager agent |
+| `llmTerraModelDeploymentName` | `<prefix>-llm-terra-deploy` | `gpt-5.6-terra` deployment, a stronger model that no script uses yet |
 | `llmMiniModelDeploymentName` | `<prefix>-llm-mini-deploy` | `gpt-5-mini` deployment, used by the specialist agents and the knowledge base |
 | `embeddingModelDeploymentName` | `<prefix>-embedding-deploy` | Embedding model deployment |
 | `aiSearchName` | `<prefix>-aisearch` | Azure AI Search service |
@@ -280,8 +281,9 @@ To use another region, change `--location` in `az group create`. Existing resour
 |---|---|
 | **Azure AI Foundry account** (`Microsoft.CognitiveServices/accounts`, kind `AIServices`, SKU `S0`) | System-assigned identity, project management enabled, custom subdomain. Local (key) auth stays enabled because Azure AI Search calls the models with an API key. |
 | **Foundry project** | Logical container for the agents, connections and deployments. |
-| **LLM deployment**: `gpt-5.6-luna` (2026-07-09) | `GlobalStandard`, 100K TPM. Used by `managerAgent`. |
-| **LLM deployment**: `gpt-5-mini` (2025-08-07) | `GlobalStandard`, 100K TPM. Used by the four specialist agents, and by AI Search for ingestion and query planning. Deployed after the first LLM to avoid parallel deployment conflicts. |
+| **LLM deployment**: `gpt-5.6-luna` (2026-07-09) | `GlobalStandard`, 1,000K TPM. Used by `managerAgent`, by the single agent `travelAgent` and as the LLM judge of the evaluation. |
+| **LLM deployment**: `gpt-5.6-terra` (2026-07-09) | `GlobalStandard`, 1,000K TPM. Stronger and about 10 times more expensive per token than `gpt-5.6-luna`. No script uses it yet; a deployment costs nothing until it is called. |
+| **LLM deployment**: `gpt-5-mini` (2025-08-07) | `GlobalStandard`, 1,000K TPM. Used by the four specialist agents, and by AI Search for ingestion and query planning. Deployed after the first LLM to avoid parallel deployment conflicts. |
 | **Embedding deployment**: `text-embedding-3-small` | `GlobalStandard`, 50K TPM (1536 dimensions). Used to vectorise the travel guide. Deployed after the LLMs. |
 | **Azure AI Search** | `free` SKU, semantic ranker `free` (required by agentic retrieval). Accepts both Entra ID (for the user) and API keys (for services). |
 | **Storage account + blob container** | `StorageV2`, `Standard_LRS`, TLS 1.2, no public blob access. Shared-key access is enabled because the Search indexer reads the container with the account key. |
@@ -299,6 +301,7 @@ The template writes **25 secrets**. A secret name is the setting name with `-` i
 |---|---|---|
 | Foundry | `PROJECT-ENDPOINT` | agent deployment scripts, `agent_execution.py` |
 | | `LLM-MODEL-DEPLOYMENT-NAME`, `LLM-MINI-MODEL-DEPLOYMENT-NAME` | agent deployment scripts (`rag_setup.py` also reads the mini model) |
+| | `LLM-TERRA-MODEL-DEPLOYMENT-NAME` | not read by any script yet |
 | | `AOAI-ENDPOINT`, `EMBEDDING-MODEL-DEPLOYMENT-NAME` | `rag_setup.py` |
 | RAI policy (management plane) | `AZURE-SUBSCRIPTION-ID`, `AZURE-RESOURCE-GROUP`, `AZURE-COGNITIVE-ACCOUNT-NAME` | agent deployment scripts |
 | Knowledge base | `SEARCH-ENDPOINT`, `KNOWLEDGE-BASE-NAME` | `rag_setup.py`, `rag_data_agent_deployment.py` |
