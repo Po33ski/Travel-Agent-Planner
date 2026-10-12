@@ -1,13 +1,14 @@
-# Test prompts for agent_exe_and_eval.py. Every test case is one user request.
+# Test prompts for magentic_exe_and_eval.py and single_agent_exe_and_eval.py.
+# Every test case is one user request.
 #
 # Required fields:
 #   id                 - unique name, used in the report and in the Foundry evaluation name
-#   query              - the user request sent to the workflow
+#   query              - the user request sent to the workflow or to the single agent
 # Optional fields, each adds one rule check (see EvaluateService.check_final_answer):
 #   expected_keywords  - words the final answer must contain (case-insensitive)
 #   expected_answer    - text the final answer must contain exactly
-#   expected_agents    - agents that must be called
-#   unexpected_agents  - agents that must not be called
+#   expected_agents    - agents that must be called (workflow only)
+#   unexpected_agents  - agents that must not be called (workflow only)
 #
 # Dates are relative on purpose, so the weather forecast stays available.
 test_cases:

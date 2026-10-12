@@ -31,7 +31,7 @@ nlp:
   sentiment_analysis:
     sentiment_escalation_threshold: 0.5
 
-# Workflow evaluation (agent_exe_and_eval.py)
+# Evaluation (magentic_exe_and_eval.py and single_agent_exe_and_eval.py)
 evaluation:
   # Key Vault secret with the model deployment used as the LLM judge
   judge_model_secret: "LLM-MODEL-DEPLOYMENT-NAME"
@@ -41,17 +41,19 @@ evaluation:
   repetitions: 1
   # Seconds to wait for one Foundry evaluation run
   timeout_seconds: 300
-  # Word limit of the final answer, as set in the manager prompt
-  max_answer_words: 500
-  # Foundry built-in evaluators for the final answer of the workflow
+  # Word limit of the final answer, as set in the system prompt of the manager / of the single agent
+  max_answer_words:
+    magentic: 500
+    single_agent: 1000
+  # Foundry built-in evaluators for the final answer
   final_answer_evaluators:
     - task_completion
     - intent_resolution
     - relevance
     - coherence
-  # Per-agent evaluation adds one Foundry evaluation run per specialist agent
+  # Agent evaluation adds one Foundry evaluation run per specialist agent (per run for the single agent)
   evaluate_agents: true
-  # Foundry built-in evaluators for every specialist agent
+  # Foundry built-in evaluators for every specialist agent of the workflow and for the single agent
   agent_evaluators:
     - task_adherence
     - relevance

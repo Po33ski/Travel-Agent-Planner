@@ -3,7 +3,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from agent_framework import AgentMiddleware, add_usage_details, evaluate_workflow
+import yaml
+from agent_framework import AgentMiddleware, add_usage_details, evaluate_agent, evaluate_workflow
 from agent_framework.foundry import FoundryEvals
 
 # Token counts reported in usage_details of an agent response. The input count includes
@@ -20,9 +21,9 @@ TOKEN_FIELDS = (
 class TokenUsageMiddleware(AgentMiddleware):
     """
     Agent middleware that records the token usage of every agent call.
-    Add one shared instance to the middleware list of every agent of a workflow, the manager
-    included. Usage is read from usage_details of the agent response, which is only filled
-    for non-streaming runs.
+    Add one shared instance to the middleware list of every evaluated agent: the single agent,
+    or every agent of a workflow, the manager included. Usage is read from usage_details of
+    the agent response, which is only filled for non-streaming runs.
     """
 
     def __init__(self):
@@ -30,7 +31,7 @@ class TokenUsageMiddleware(AgentMiddleware):
         self.calls_by_agent = {}
 
     def reset(self):
-        """Forget the recorded usage, e.g. before the next workflow run."""
+        """Forget the recorded usage, e.g. before the next run."""
         self.usage_by_agent.clear()
         self.calls_by_agent.clear()
 
@@ -45,35 +46,45 @@ class TokenUsageMiddleware(AgentMiddleware):
 
 class EvaluateService:
     """
-    Evaluation of a multi-agent workflow: answer quality, rule checks and token usage.
+    Evaluation of a single agent or a multi-agent workflow: answer quality, rule checks and token usage.
     Quality is scored by the Microsoft Foundry built-in evaluators (an LLM judge running in the
     Foundry project), rule checks run locally without model calls and token usage is collected
-    by usage_middleware. The service is not tied to one orchestration: every workflow whose
-    agents carry usage_middleware produces the same report, so workflows can be compared.
+    by usage_middleware. Both kinds of runs produce the same report, so a single agent and
+    different workflows can be compared.
     """
 
-    def __init__(self, judge_client, config):
+    def __init__(self, judge_client, config, max_answer_words):
         """
         Args:
             judge_client: FoundryChatClient whose model deployment is used as the LLM judge.
             config: content of config.yaml; the "evaluation" section is used.
+            max_answer_words: word limit of the final answer, as set in the system prompt
+                of the evaluated agent or workflow manager.
         """
         settings = config["evaluation"]
         self.judge_client = judge_client
+        self.max_answer_words = max_answer_words
+        self.test_cases_path = settings["test_cases_path"]
+        self.output_dir = settings["output_dir"]
         self.final_answer_evaluators = settings["final_answer_evaluators"]
         self.agent_evaluators = settings["agent_evaluators"]
         self.agent_evaluation_enabled = settings["evaluate_agents"]
         self.timeout_seconds = settings["timeout_seconds"]
-        self.max_answer_words = settings["max_answer_words"]
-        # Add this instance to the middleware of every agent of the evaluated workflow
+        # Add this instance to the middleware of every evaluated agent
         self.usage_middleware = TokenUsageMiddleware()
+
+    def load_test_cases(self):
+        """Read the test prompts (see inputs/evaluation_prompts.yaml for the format)."""
+        with open(self.test_cases_path, "r", encoding="utf-8") as file:
+            return yaml.safe_load(file)["test_cases"]
 
     # ------------------------------------------------------------------ token usage
     def count_workflow_tokens(self):
         """Sum the token usage of all agents recorded since the last reset.
 
         Returns {"total": {...}, "per_agent": {agent_name: {...}}}. Every entry holds the
-        token counts (TOKEN_FIELDS) and the number of agent calls.
+        token counts (TOKEN_FIELDS) and the number of agent calls. A single agent gives
+        one entry in "per_agent".
         """
         per_agent = {}
         total_usage = None
@@ -88,7 +99,7 @@ class EvaluateService:
             "per_agent": per_agent,
         }
 
-    # ------------------------------------------------------------------ workflow run
+    # ------------------------------------------------------------------ runs
     async def run_workflow(self, workflow, query):
         """Run the workflow once and return its result, final answer, duration and token usage."""
         self.usage_middleware.reset()
@@ -103,7 +114,22 @@ class EvaluateService:
             "token_usage": self.count_workflow_tokens(),
         }
 
-    # ------------------------------------------------------------------ evaluation
+    async def run_agent(self, agent, query):
+        """Run the single agent once and return its response, final answer, duration and token usage."""
+        self.usage_middleware.reset()
+        started = time.perf_counter()
+        # No session: every test case is an independent conversation
+        response = await agent.run(query)
+        duration_seconds = time.perf_counter() - started
+
+        return {
+            "response": response,
+            "final_answer": response.text,
+            "duration_seconds": round(duration_seconds, 1),
+            "token_usage": self.count_workflow_tokens(),
+        }
+
+    # ------------------------------------------------------------------ workflow evaluation
     async def evaluate_final_answer(self, workflow, workflow_result, eval_name):
         """Score the final answer of the workflow with the Foundry evaluators (LLM judge)."""
         results = await evaluate_workflow(
@@ -116,10 +142,10 @@ class EvaluateService:
         return self._results_to_dict(results[0])
 
     async def evaluate_agents(self, workflow, workflow_result, eval_name):
-        """Score every specialist agent separately: the steps that led to the final answer.
+        """Score every specialist agent of the workflow separately: the steps that led to the final answer.
 
         The result holds one entry per agent under "agents". Tool evaluators are skipped
-        by Foundry for agents without function tools.
+        for agents without function tools.
         """
         results = await evaluate_workflow(
             workflow=workflow,
@@ -130,11 +156,26 @@ class EvaluateService:
         )
         return self._results_to_dict(results[0])
 
-    def check_final_answer(self, final_answer, called_agents, test_case):
+    # ------------------------------------------------------------------ single agent evaluation
+    async def evaluate_agent_response(self, agent, query, response, evaluators, eval_name):
+        """Score one response of a single agent with the given Foundry evaluators (LLM judge)."""
+        results = await evaluate_agent(
+            agent=agent,
+            queries=query,
+            responses=response,
+            evaluators=self._foundry_evals(evaluators),
+            eval_name=eval_name,
+        )
+        return self._results_to_dict(results[0])
+
+    # ------------------------------------------------------------------ rule checks
+    def check_final_answer(self, final_answer, test_case, called_agents=None):
         """Run the rule checks on the final answer and on the agent routing; no model calls.
 
-        The answer length is always checked. The optional test case fields expected_keywords,
-        expected_answer, expected_agents and unexpected_agents add one check each.
+        The answer length is always checked. The optional test case fields expected_keywords
+        and expected_answer add one check each. expected_agents and unexpected_agents are
+        checked only when called_agents is given: they describe the routing inside a
+        workflow and do not apply to a single agent.
         """
         checks = []
 
@@ -156,7 +197,7 @@ class EvaluateService:
             expected_answer = test_case["expected_answer"]
             add_check("expected_answer", expected_answer in final_answer, f"expected: {expected_answer}")
 
-        if "expected_agents" in test_case:
+        if called_agents is not None and "expected_agents" in test_case:
             not_called = [a for a in test_case["expected_agents"] if a not in called_agents]
             add_check(
                 "expected_agents",
@@ -164,12 +205,13 @@ class EvaluateService:
                 f"not called: {not_called}" if not_called else "all expected agents called",
             )
 
-        if "unexpected_agents" in test_case:
+        if called_agents is not None and "unexpected_agents" in test_case:
             called = [a for a in test_case["unexpected_agents"] if a in called_agents]
             add_check("unexpected_agents", not called, f"called: {called}" if called else "none called")
 
         return checks
 
+    # ------------------------------------------------------------------ test cases
     async def evaluate_test_case(self, workflow, test_case, workflow_name):
         """Run one test case through the workflow and evaluate the run.
 
@@ -190,7 +232,7 @@ class EvaluateService:
         record.update(run)
 
         called_agents = list(record["token_usage"]["per_agent"])
-        record["rule_checks"] = self.check_final_answer(record["final_answer"], called_agents, test_case)
+        record["rule_checks"] = self.check_final_answer(record["final_answer"], test_case, called_agents)
 
         # The evaluation name is shown in the Foundry portal
         eval_name = f"{workflow_name} - {test_case['id']}"
@@ -206,6 +248,50 @@ class EvaluateService:
                 )
             else:
                 record["agent_evaluation"] = {"status": "skipped", "error": None, "items": [], "agents": {}}
+
+        return record
+
+    async def evaluate_agent_test_case(self, agent, test_case):
+        """Run one test case through the single agent and evaluate the run.
+
+        The record has the same format as the one of evaluate_test_case: the final answer is
+        scored with final_answer_evaluators and the agent's work (tool use included) with
+        agent_evaluators. Errors are recorded instead of raised.
+        """
+        record = {"id": test_case["id"], "query": test_case["query"]}
+
+        try:
+            run = await self.run_agent(agent, test_case["query"])
+        except Exception as error:
+            record["error"] = f"{type(error).__name__}: {error}"
+            # Tokens used before the failure still count
+            record["token_usage"] = self.count_workflow_tokens()
+            return record
+
+        response = run.pop("response")
+        record.update(run)
+
+        record["rule_checks"] = self.check_final_answer(record["final_answer"], test_case)
+
+        # The evaluation name is shown in the Foundry portal
+        eval_name = f"{agent.name} - {test_case['id']}"
+        record["final_answer_evaluation"] = await self._run_evaluation(
+            self.evaluate_agent_response(
+                agent, test_case["query"], response, self.final_answer_evaluators, f"{eval_name} - final answer"
+            )
+        )
+        if self.agent_evaluation_enabled:
+            results = await self._run_evaluation(
+                self.evaluate_agent_response(
+                    agent, test_case["query"], response, self.agent_evaluators, f"{eval_name} - agent"
+                )
+            )
+            record["agent_evaluation"] = {
+                "status": results["status"],
+                "error": results["error"],
+                "items": [],
+                "agents": {agent.name: results},
+            }
 
         return record
 
@@ -266,10 +352,10 @@ class EvaluateService:
             },
         }
 
-    def save_report(self, report, output_dir):
-        """Write the report as a JSON file in output_dir and return the file path."""
+    def save_report(self, report):
+        """Write the report as a JSON file in the output directory and return the file path."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_path = Path(output_dir) / f"evaluation_{report['workflow_name']}_{timestamp}.json"
+        output_path = Path(self.output_dir) / f"evaluation_{report['workflow_name']}_{timestamp}.json"
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(output_path, "w", encoding="utf-8") as file:
@@ -277,6 +363,33 @@ class EvaluateService:
             json.dump(report, file, indent=2, ensure_ascii=False, default=str)
 
         return output_path
+
+    def print_case_result(self, record):
+        """Print the outcome of one test case to the console."""
+        if "error" in record:
+            print(f"❌ Run failed: {record['error']}")
+            return
+
+        print("\n" + "=" * 50)
+        print("ASSISTANT REPLY:")
+        print("=" * 50)
+        print(record["final_answer"])
+        print("=" * 50)
+
+        tokens = record["token_usage"]["total"]
+        print(
+            f"[EVAL] Duration: {record['duration_seconds']} s, tokens: {tokens['total_token_count']} "
+            f"(input {tokens['input_token_count']}, output {tokens['output_token_count']}) "
+            f"in {tokens['calls']} agent calls"
+        )
+        for check in record["rule_checks"]:
+            print(f"[EVAL] {'✅' if check['passed'] else '❌'} {check['name']}: {check['details']}")
+
+        final_answer_evaluation = record["final_answer_evaluation"]
+        print(
+            f"[EVAL] Final answer (LLM judge): {final_answer_evaluation['status']}, "
+            f"{final_answer_evaluation.get('passed', 0)} passed, {final_answer_evaluation.get('failed', 0)} failed"
+        )
 
     def print_summary(self, summary):
         """Print the summary of a report to the console."""
@@ -292,7 +405,7 @@ class EvaluateService:
             self._print_metrics(f"Agent: {agent_name}", metrics)
 
         tokens = summary["tokens"]
-        print("\nTokens (workflow):")
+        print("\nTokens:")
         print(f"  total: {tokens['workflow_total'].get('total_token_count', 0)}")
         print(f"  average per run: {tokens['workflow_average_per_run'].get('total_token_count', 0)}")
         for agent_name, usage in tokens["per_agent_total"].items():

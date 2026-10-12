@@ -25,8 +25,9 @@ Every user signs in with a name. Their profile, preferences and conversation his
 4. [The agents](#the-agents)
 5. [Tools](#tools)
 6. [User memory and language detection](#user-memory-and-language-detection)
-7. [Guardrail configuration: `StrictGuardrail`](#guardrail-configuration-strictguardrail)
-8. [Clean-up](#clean-up)
+7. [Evaluation](#evaluation)
+8. [Guardrail configuration: `StrictGuardrail`](#guardrail-configuration-strictguardrail)
+9. [Clean-up](#clean-up)
 
 ---
 
@@ -39,9 +40,11 @@ Every user signs in with a name. Their profile, preferences and conversation his
 | `agents/<agent>_deployment.py` | One script per agent. Creates or updates the RAI policy and the server-side agent (system prompt and tools) |
 | `agents/<agent>_config.yaml` | One file per agent: agent name and system prompt |
 | `agent_execution.py` | Interactive command-line chat. Asks for the user name, builds the Magentic workflow, runs the weather and hotel search tools locally, saves the conversation and preferences to Cosmos DB and converts the final answer to speech |
-| `agent_exe_and_eval.py` | Runs the test prompts through the Magentic workflow, evaluates every run and saves the report in `outputs/` |
+| `magentic_exe_and_eval.py` | Runs the test prompts through the Magentic workflow, evaluates every run and saves the report in `outputs/` |
+| `single_agent_exe_and_eval.py` | The same evaluation for the single agent `travelAgent`, which does the work of the whole team alone |
+| `agents/travel_agent_deployment.py`, `agents/travel_agent_config.yaml` | The single agent `travelAgent` with all four tools. Used only by `single_agent_exe_and_eval.py` |
 | `config.yaml` | Guardrail (RAI) settings shared by all agents, profile TTL for Cosmos DB, the NLP sentiment threshold and the evaluation settings |
-| `classes/evaluate_services.py` | `EvaluateService`: Foundry evaluators for the final answer and for every agent, rule checks, token counting and the report. `TokenUsageMiddleware`: records the token usage of every agent call |
+| `classes/evaluate_services.py` | `EvaluateService`: Foundry evaluators for the final answer and for every agent, rule checks, token counting and the report, for a workflow or a single agent. `TokenUsageMiddleware`: records the token usage of every agent call |
 | `classes/secret_manager_services.py` | `SecretManager`: reads secrets from Key Vault and caches them in memory |
 | `classes/cosmos_memory_services.py` | `CosmosMemory`: user profiles, preferences and conversation history in Cosmos DB |
 | `classes/azure_nlp_services.py` | `AzureNLPService`: language detection and other Azure AI Language features |
@@ -184,6 +187,12 @@ python agents/hotel_agent_deployment.py
 
 Each script creates or updates the `StrictGuardrail` RAI policy, then creates a new version of its agent with the system prompt, tools and policy attached.
 
+Optional: deploy the single agent `travelAgent`. The chat does not use it; it is needed only to compare a single agent with the team (see [Evaluation](#evaluation)).
+
+```powershell
+python agents/travel_agent_deployment.py
+```
+
 > Run the scripts by path, as shown. `python -m agents.<script>` does not work when the `openai-agents` package is installed, because that package is also imported as `agents`.
 
 ### 8. Chat with the agents
@@ -210,25 +219,14 @@ Example prompt with hotel search:
 I'm going to Lisbon from 2026-10-12 to 2026-10-15. Can you plan my trip and suggest a few hotels near the city centre?
 ```
 
-### 9. Evaluate the workflow
+### 9. Evaluate the agents
 
 ```powershell
-python agent_exe_and_eval.py
+python magentic_exe_and_eval.py        # the Magentic team
+python single_agent_exe_and_eval.py    # the single agent (deploy travelAgent first, see step 7)
 ```
 
-The script needs only `KEY_VAULT_URL`. It runs every prompt from `inputs/evaluation_prompts.yaml` through the Magentic workflow, without the user profile, Cosmos DB and speech steps of the chat, and evaluates each run in three ways:
-
-| Evaluation | Method of `EvaluateService` | How |
-|---|---|---|
-| Final answer | `evaluate_final_answer` | Foundry built-in evaluators with an LLM judge (`final_answer_evaluators` in `config.yaml`) |
-| Every specialist agent | `evaluate_agents` | Foundry built-in evaluators per agent (`agent_evaluators`). Turn off with `evaluate_agents: false` to save judge calls |
-| Rules | `check_final_answer` | Local checks without model calls: answer length and the optional `expected_keywords`, `expected_answer`, `expected_agents` and `unexpected_agents` of the test case |
-
-Token usage is recorded by `TokenUsageMiddleware`, which is added to every agent, the manager included. `count_workflow_tokens` sums it per agent and for the whole workflow.
-
-The report `outputs/evaluation_<workflow>_<timestamp>.json` holds a summary (passed / failed counts and average score per metric, tokens per agent and per run, average duration) and one record per run with the final answer, the scores and the judge's explanations. The Foundry evaluation runs are also listed in the Foundry portal under **Evaluations**.
-
-Every run calls the models, so it uses tokens for the workflow and for the judge. The judge deployment is set by `judge_model_secret` and the number of runs per prompt by `repetitions` in `config.yaml`. To evaluate another workflow, build it with agents that carry `evaluate_service.usage_middleware` and give it its own `WORKFLOW_NAME`: the reports have the same format and can be compared.
+Both scripts need only `KEY_VAULT_URL`. They run the test prompts from `inputs/evaluation_prompts.yaml`, score every answer and save a report in `outputs/`. See [Evaluation](#evaluation) for the metrics and the report.
 
 ---
 
@@ -540,6 +538,73 @@ After every answer, `save_response_and_preferences()` calls `AzureNLPService.ext
 If the language can't be recognised (very short text such as *"ok"* returns `(Unknown)`) or the service call fails, the preference is left out and the stored value stays unchanged.
 
 `extract_preferences()` is the place to add further preferences learned from the user's messages. `AzureNLPService` already has methods for PII redaction, named entity recognition, key phrase extraction and sentiment analysis (with the escalation threshold from `nlp.sentiment_analysis` in `config.yaml`); they are not used by the chat yet. The stored preferences aren't passed to the agents yet either.
+
+---
+
+## Evaluation
+
+Two scripts measure answer quality and token usage on the same set of test prompts, so the Magentic team can be compared with a single agent:
+
+| Script | What it evaluates |
+|---|---|
+| `magentic_exe_and_eval.py` | The Magentic workflow of `agent_execution.py`: the manager and the four specialist agents |
+| `single_agent_exe_and_eval.py` | `travelAgent`: one prompt agent on `gpt-5.6-luna` with all four tools (knowledge base, web search, weather, hotel search), as on the `single-agent` branch |
+
+Both scripts only run and evaluate the agents. They do not ask for a user name, do not write to Cosmos DB and do not produce speech, so test prompts never end up in a user's conversation history. All evaluation logic is in `EvaluateService` (`classes/evaluate_services.py`).
+
+### Test prompts (`inputs/evaluation_prompts.yaml`)
+
+Each test case has an `id` and a `query`. Optional fields add rule checks:
+
+| Field | Check |
+|---|---|
+| `expected_keywords` | Words the final answer must contain (case-insensitive) |
+| `expected_answer` | Text the final answer must contain exactly, for example the refusal of an out-of-scope request |
+| `expected_agents` | Agents that must be called. Workflow only |
+| `unexpected_agents` | Agents that must not be called, for example `hotelAgent` when hotels were not requested. Workflow only |
+
+The six prompts cover a full trip plan, destination information without hotels, a weather question, a request in Polish, a question that needs the web search fallback and an out-of-scope request. Dates are relative ("next week"), so the weather forecast stays available.
+
+### What is measured
+
+| Evaluation | Workflow | Single agent | How |
+|---|---|---|---|
+| Final answer | `evaluate_final_answer` | `evaluate_agent_response` | Foundry built-in evaluators with an LLM judge: `task_completion`, `intent_resolution`, `relevance`, `coherence` (`final_answer_evaluators` in `config.yaml`) |
+| Agents | `evaluate_agents`: every specialist separately | `evaluate_agent_response`: the agent's own work, tool use included | Foundry built-in evaluators: `task_adherence`, `relevance`, `tool_call_accuracy` (`agent_evaluators`). The tool evaluator is skipped for agents without function tools |
+| Rules | `check_final_answer` | `check_final_answer` | Local checks without model calls: the word limit of the answer and the optional fields of the test case |
+| Tokens | `count_workflow_tokens` | `count_workflow_tokens` | Input, cached input, output, reasoning and total tokens and the number of calls, per agent and in total |
+
+The Foundry evaluators run in the Foundry project, not locally: the script uploads the conversation and waits for the evaluation run. The runs are also listed in the Foundry portal under **Evaluations**.
+
+**Token counting.** `TokenUsageMiddleware` is added to every `FoundryAgent`. After each agent call it reads `usage_details` from the response and adds it to the totals of that agent. The Magentic manager is called by the orchestrator and does not appear in the workflow events as an agent, so the middleware is the only place that sees its usage.
+
+### Report
+
+Each script writes `outputs/evaluation_<name>_<timestamp>.json`, where the name is `travelPlannerWorkflow` or `travelAgent`:
+
+- `summary`: number of runs and failed runs, average duration, passed / failed counts and average score per metric (final answer, rule checks, each agent), and tokens in total, on average per run and per agent.
+- `cases`: one record per run with the query, the final answer, the duration, the token usage, the rule checks and the scores with the judge's explanations.
+
+The two reports have the same format. Compare the metrics in `summary.final_answer`, `summary.rule_checks` and `summary.tokens`.
+
+### Settings (`evaluation` in `config.yaml`)
+
+| Setting | Meaning |
+|---|---|
+| `judge_model_secret` | Key Vault secret with the model deployment used as the LLM judge |
+| `test_cases_path`, `output_dir` | Test prompts file and report folder |
+| `repetitions` | Runs per test case. More than 1 shows how stable the scores are |
+| `timeout_seconds` | How long to wait for one Foundry evaluation run |
+| `max_answer_words` | Word limit of the final answer, as set in the system prompt of the manager (`magentic`) and of the single agent (`single_agent`) |
+| `final_answer_evaluators`, `agent_evaluators` | Foundry built-in evaluator names |
+| `evaluate_agents` | `false` skips the agent evaluation and saves judge calls |
+
+### Cost and limits
+
+- Every run calls the models, and every Foundry evaluation run calls the judge model. One prompt costs one workflow run plus up to five evaluation runs for the team (final answer and four specialists), or one agent run plus two evaluation runs for the single agent. Start with one or two test cases.
+- The default judge is the `gpt-5.6-luna` deployment, the model that also writes the final answer in both set-ups. Point `judge_model_secret` at another deployment to avoid a model judging its own text.
+- `task_adherence` judges an agent against its instructions, but the system prompts live server-side and are not part of the evaluated conversation, so the judge sees only the request and the answer.
+- Foundry documents limited support of the tool evaluators for web search calls.
 
 ---
 

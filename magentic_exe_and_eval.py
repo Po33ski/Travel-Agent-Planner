@@ -15,8 +15,7 @@ from classes.evaluate_services import EvaluateService
 # WARNING shows tool-loop problems such as "Maximum consecutive function call errors reached"
 logging.getLogger("agent_framework").setLevel(logging.WARNING)
 
-# Name of the evaluated workflow: used in the report file name and in the Foundry evaluation names.
-# Give every workflow its own name to compare their reports.
+# Name of the evaluated workflow: used in the report file name and in the Foundry evaluation names
 WORKFLOW_NAME = "travelPlannerWorkflow"
 
 # =============================================================================
@@ -46,7 +45,11 @@ judge_client = FoundryChatClient(
     model=judge_model_deployment_name,
     credential=credential,
 )
-evaluate_service = EvaluateService(judge_client, config)
+evaluate_service = EvaluateService(
+    judge_client,
+    config,
+    max_answer_words=evaluation_config["max_answer_words"]["magentic"],
+)
 
 
 async def log_tool_calls(context: FunctionInvocationContext, call_next):
@@ -118,40 +121,6 @@ def create_workflow(manager_agent, participants):
     return workflow
 
 
-def load_test_cases(path):
-    """Read the test prompts (see inputs/evaluation_prompts.yaml for the format)."""
-    with open(path, "r", encoding="utf-8") as file:
-        return yaml.safe_load(file)["test_cases"]
-
-
-def print_case_result(record):
-    """Print the outcome of one test case."""
-    if "error" in record:
-        print(f"❌ Workflow run failed: {record['error']}")
-        return
-
-    print("\n" + "=" * 50)
-    print("ASSISTANT REPLY:")
-    print("=" * 50)
-    print(record["final_answer"])
-    print("=" * 50)
-
-    tokens = record["token_usage"]["total"]
-    print(
-        f"[EVAL] Duration: {record['duration_seconds']} s, tokens: {tokens['total_token_count']} "
-        f"(input {tokens['input_token_count']}, output {tokens['output_token_count']}) "
-        f"in {tokens['calls']} agent calls"
-    )
-    for check in record["rule_checks"]:
-        print(f"[EVAL] {'✅' if check['passed'] else '❌'} {check['name']}: {check['details']}")
-
-    final_answer_evaluation = record["final_answer_evaluation"]
-    print(
-        f"[EVAL] Final answer (LLM judge): {final_answer_evaluation['status']}, "
-        f"{final_answer_evaluation.get('passed', 0)} passed, {final_answer_evaluation.get('failed', 0)} failed"
-    )
-
-
 # Microsoft Agent Frame is built entirely on async programming.
 # workflow.run() is an async method, so you need to run it in an async context.
 async def run_evaluation(manager_agent, participants, test_cases, case_records):
@@ -171,12 +140,12 @@ async def run_evaluation(manager_agent, participants, test_cases, case_records):
             record = await evaluate_service.evaluate_test_case(workflow, test_case, WORKFLOW_NAME)
             record["repetition"] = repetition
             case_records.append(record)
-            print_case_result(record)
+            evaluate_service.print_case_result(record)
 
 
 def main() -> int:
     try:
-        test_cases = load_test_cases(evaluation_config["test_cases_path"])
+        test_cases = evaluate_service.load_test_cases()
         manager_agent, participants = create_agents(evaluate_service.usage_middleware)
     except Exception as e:
         print(f"\n❌ Execution failed: {str(e)}")
@@ -196,7 +165,7 @@ def main() -> int:
     # The report is saved even after an interruption: every finished run has already cost tokens
     report = evaluate_service.create_report(WORKFLOW_NAME, case_records)
     evaluate_service.print_summary(report["summary"])
-    report_path = evaluate_service.save_report(report, evaluation_config["output_dir"])
+    report_path = evaluate_service.save_report(report)
     print(f"\n✨ Evaluation report saved to: {report_path}")
     return 0
 
