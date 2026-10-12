@@ -98,7 +98,7 @@ resource llmModelDeployment 'Microsoft.CognitiveServices/accounts/deployments@20
     aiProject
   ]
   sku : {
-    capacity: 100 // Rate limit in thousands of tokens per minute (50 = 50K TPM).
+    capacity: 1000 // Rate limit in thousands of tokens per minute (50 = 50K TPM).
     name: 'GlobalStandard'
   }
   properties: {
@@ -117,7 +117,7 @@ resource llmMiniModelDeployment 'Microsoft.CognitiveServices/accounts/deployment
     llmModelDeployment  // Explicitly wait for LLM to finish first
   ]
   sku : {
-    capacity: 100 // Rate limit in thousands of tokens per minute (50 = 50K TPM).
+    capacity: 1000 // Rate limit in thousands of tokens per minute (50 = 50K TPM).
     name: 'GlobalStandard'
   }
   properties: {

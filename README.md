@@ -39,7 +39,9 @@ Every user signs in with a name. Their profile, preferences and conversation his
 | `agents/<agent>_deployment.py` | One script per agent. Creates or updates the RAI policy and the server-side agent (system prompt and tools) |
 | `agents/<agent>_config.yaml` | One file per agent: agent name and system prompt |
 | `agent_execution.py` | Interactive command-line chat. Asks for the user name, builds the Magentic workflow, runs the weather and hotel search tools locally, saves the conversation and preferences to Cosmos DB and converts the final answer to speech |
-| `config.yaml` | Guardrail (RAI) settings shared by all agents, profile TTL for Cosmos DB and the NLP sentiment threshold |
+| `agent_exe_and_eval.py` | Runs the test prompts through the Magentic workflow, evaluates every run and saves the report in `outputs/` |
+| `config.yaml` | Guardrail (RAI) settings shared by all agents, profile TTL for Cosmos DB, the NLP sentiment threshold and the evaluation settings |
+| `classes/evaluate_services.py` | `EvaluateService`: Foundry evaluators for the final answer and for every agent, rule checks, token counting and the report. `TokenUsageMiddleware`: records the token usage of every agent call |
 | `classes/secret_manager_services.py` | `SecretManager`: reads secrets from Key Vault and caches them in memory |
 | `classes/cosmos_memory_services.py` | `CosmosMemory`: user profiles, preferences and conversation history in Cosmos DB |
 | `classes/azure_nlp_services.py` | `AzureNLPService`: language detection and other Azure AI Language features |
@@ -49,8 +51,8 @@ Every user signs in with a name. Their profile, preferences and conversation his
 | `classes/speech_services.py` | `AzureSpeechService` and the `text_to_speech` helper |
 | `classes/rai_policies_services.py` | `RaiPolicyManager`: builds and deploys the RAI policy from `config.yaml` |
 | `utils/utils.py` | Helpers for normalising weather API responses |
-| `inputs/` | Source documents for the knowledge base (`world_city_travel_guide.md`, `.pdf`) |
-| `outputs/` | Audio file with the spoken final answer |
+| `inputs/` | Source documents for the knowledge base (`world_city_travel_guide.md`, `.pdf`) and the test prompts for the evaluation (`evaluation_prompts.yaml`) |
+| `outputs/` | Audio file with the spoken final answer and the evaluation reports (`evaluation_<workflow>_<timestamp>.json`) |
 | `scripts/` | Step-by-step CLI commands for environment setup, deployment and deletion |
 | `docs/architecture.svg` | Architecture diagram shown at the top of this README |
 
@@ -207,6 +209,26 @@ Example prompt with hotel search:
 ```text
 I'm going to Lisbon from 2026-10-12 to 2026-10-15. Can you plan my trip and suggest a few hotels near the city centre?
 ```
+
+### 9. Evaluate the workflow
+
+```powershell
+python agent_exe_and_eval.py
+```
+
+The script needs only `KEY_VAULT_URL`. It runs every prompt from `inputs/evaluation_prompts.yaml` through the Magentic workflow, without the user profile, Cosmos DB and speech steps of the chat, and evaluates each run in three ways:
+
+| Evaluation | Method of `EvaluateService` | How |
+|---|---|---|
+| Final answer | `evaluate_final_answer` | Foundry built-in evaluators with an LLM judge (`final_answer_evaluators` in `config.yaml`) |
+| Every specialist agent | `evaluate_agents` | Foundry built-in evaluators per agent (`agent_evaluators`). Turn off with `evaluate_agents: false` to save judge calls |
+| Rules | `check_final_answer` | Local checks without model calls: answer length and the optional `expected_keywords`, `expected_answer`, `expected_agents` and `unexpected_agents` of the test case |
+
+Token usage is recorded by `TokenUsageMiddleware`, which is added to every agent, the manager included. `count_workflow_tokens` sums it per agent and for the whole workflow.
+
+The report `outputs/evaluation_<workflow>_<timestamp>.json` holds a summary (passed / failed counts and average score per metric, tokens per agent and per run, average duration) and one record per run with the final answer, the scores and the judge's explanations. The Foundry evaluation runs are also listed in the Foundry portal under **Evaluations**.
+
+Every run calls the models, so it uses tokens for the workflow and for the judge. The judge deployment is set by `judge_model_secret` and the number of runs per prompt by `repetitions` in `config.yaml`. To evaluate another workflow, build it with agents that carry `evaluate_service.usage_middleware` and give it its own `WORKFLOW_NAME`: the reports have the same format and can be compared.
 
 ---
 
