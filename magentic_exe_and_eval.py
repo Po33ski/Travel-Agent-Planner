@@ -4,13 +4,19 @@ import logging
 from azure.identity import DefaultAzureCredential
 from agent_framework.foundry import FoundryAgent, FoundryChatClient
 from agent_framework.orchestrations import MagenticBuilder
-from agent_framework import FunctionInvocationContext
 from azure.keyvault.secrets import SecretClient
 import yaml
 from classes.weather_services import get_forecast_weather
 from classes.hotel_services import search_for_hotels
 from classes.secret_manager_services import SecretManager
 from classes.evaluate_services import EvaluateService
+from utils.agent_middleware import (
+    BlockedReplyMonitor,
+    drop_foreign_tool_contents,
+    log_agent_replies,
+    log_manager_decisions,
+    log_tool_calls,
+)
 
 # WARNING shows tool-loop problems such as "Maximum consecutive function call errors reached"
 logging.getLogger("agent_framework").setLevel(logging.WARNING)
@@ -52,21 +58,20 @@ evaluate_service = EvaluateService(
 )
 
 
-async def log_tool_calls(context: FunctionInvocationContext, call_next):
-    print(f"[TOOL] -> {context.function.name}({context.arguments})")
-    await call_next()
-    print(f"[TOOL] <- {context.function.name}: {str(context.result)[:200]}")
+# Detects answers that the model refused or the content filter cut off
+blocked_reply_monitor = BlockedReplyMonitor()
 
 
 def create_agents(usage_middleware):
     # 1. Wrap the pre-deployed Foundry project agents.
     # agent_name must match agent_name in agents/*_config.yaml and the Team section of the manager prompt.
     # usage_middleware records the token usage of every agent, the manager included.
+    # drop_foreign_tool_contents: the agents get each other's text answers, not the raw tool calls.
     manager_agent = FoundryAgent(
         project_endpoint=endpoint,
         agent_name="managerAgent",
         credential=credential,
-        middleware=[usage_middleware],
+        middleware=[drop_foreign_tool_contents, usage_middleware, blocked_reply_monitor, log_manager_decisions],
     )
 
     # The manager picks the next agent from these descriptions
@@ -76,7 +81,7 @@ def create_agents(usage_middleware):
         description="Retrieves attractions, restaurants, events, transportation and practical tips "
         "from the travel guide knowledge base. First choice for destination information.",
         credential=credential,
-        middleware=[usage_middleware],
+        middleware=[drop_foreign_tool_contents, usage_middleware, blocked_reply_monitor, log_agent_replies],
     )
     web_data_agent = FoundryAgent(
         project_endpoint=endpoint,
@@ -84,7 +89,7 @@ def create_agents(usage_middleware):
         description="Searches the web for travel information missing from the knowledge base, "
         "e.g. visa requirements or current events. Fallback only.",
         credential=credential,
-        middleware=[usage_middleware],
+        middleware=[drop_foreign_tool_contents, usage_middleware, blocked_reply_monitor, log_agent_replies],
     )
     # Function tools run locally, so the weather and hotel agents need their Python implementations
     weather_agent = FoundryAgent(
@@ -93,7 +98,7 @@ def create_agents(usage_middleware):
         description="Returns the daily weather forecast for a location and an optional date range.",
         credential=credential,
         tools=[get_forecast_weather],
-        middleware=[usage_middleware, log_tool_calls],
+        middleware=[drop_foreign_tool_contents, usage_middleware, blocked_reply_monitor, log_agent_replies, log_tool_calls],
     )
     hotel_agent = FoundryAgent(
         project_endpoint=endpoint,
@@ -101,7 +106,7 @@ def create_agents(usage_middleware):
         description="Searches booking sites for hotels in a city: prices, ratings and booking links.",
         credential=credential,
         tools=[search_for_hotels],
-        middleware=[usage_middleware, log_tool_calls],
+        middleware=[drop_foreign_tool_contents, usage_middleware, blocked_reply_monitor, log_agent_replies, log_tool_calls],
     )
 
     return manager_agent, [rag_data_agent, web_data_agent, weather_agent, hotel_agent]
@@ -114,7 +119,7 @@ def create_workflow(manager_agent, participants):
         participants=participants,
         # One round = one manager check plus one agent turn. When the limit is hit the workflow
         # terminates WITHOUT a final answer, so leave room for all four agents and a retry.
-        max_round_count=10,
+        max_round_count=20,
         max_stall_count=3,  # Consecutive rounds without progress before the manager resets and replans
     ).build()
 

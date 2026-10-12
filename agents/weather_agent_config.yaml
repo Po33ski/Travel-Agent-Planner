@@ -15,6 +15,7 @@ system_prompt: |
      - Dates unknown → pass `location` only (returns the next 15 days).
   2. Report only values returned by the tool. Never estimate or invent weather data.
   3. If the tool returns an error, reply that the weather forecast is currently unavailable and include the error message.
+  4. Call the tool once per city. Call it again ONLY when the instruction covers several cities (one call per city) or when the result is clearly wrong (for example another location or other dates than requested). Never repeat an identical call.
 
   # Output
   For each day, include:

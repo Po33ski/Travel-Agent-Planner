@@ -3,13 +3,13 @@ import asyncio
 import logging
 from azure.identity import DefaultAzureCredential
 from agent_framework.foundry import FoundryAgent, FoundryChatClient
-from agent_framework import FunctionInvocationContext
 from azure.keyvault.secrets import SecretClient
 import yaml
 from classes.weather_services import get_forecast_weather
 from classes.hotel_services import search_for_hotels
 from classes.secret_manager_services import SecretManager
 from classes.evaluate_services import EvaluateService
+from utils.agent_middleware import BlockedReplyMonitor, log_tool_calls
 
 # WARNING shows tool-loop problems such as "Maximum consecutive function call errors reached"
 logging.getLogger("agent_framework").setLevel(logging.WARNING)
@@ -52,10 +52,8 @@ evaluate_service = EvaluateService(
 )
 
 
-async def log_tool_calls(context: FunctionInvocationContext, call_next):
-    print(f"[TOOL] -> {context.function.name}({context.arguments})")
-    await call_next()
-    print(f"[TOOL] <- {context.function.name}: {str(context.result)[:200]}")
+# Detects answers that the model refused or the content filter cut off
+blocked_reply_monitor = BlockedReplyMonitor()
 
 
 def create_agent(usage_middleware):
@@ -67,7 +65,7 @@ def create_agent(usage_middleware):
         agent_name=AGENT_NAME,
         credential=credential,
         tools=[get_forecast_weather, search_for_hotels],
-        middleware=[usage_middleware, log_tool_calls],
+        middleware=[usage_middleware, blocked_reply_monitor, log_tool_calls],
     )
     return agent
 
