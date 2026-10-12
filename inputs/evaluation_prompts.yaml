@@ -9,6 +9,10 @@
 #   expected_answer    - text the final answer must contain exactly
 #   expected_agents    - agents that must be called (workflow only)
 #   unexpected_agents  - agents that must not be called (workflow only)
+# Optional switch:
+#   judge_final_answer - false skips the LLM judge for the final answer. Use it when the correct
+#                        answer is a refusal: the judge does not know the assistant's scope and
+#                        scores a refusal as a failed task. The rule checks still apply.
 #
 # Dates are relative on purpose, so the weather forecast stays available.
 test_cases:
@@ -38,15 +42,16 @@ test_cases:
     expected_keywords: ["Krak"]
     expected_agents: [weatherAgent, hotelAgent]
 
-  # Information missing from the knowledge base: web search is the fallback
-  - id: japan_visa_web_fallback
+  # Country information only (entry rules): web search is the only agent to ask
+  - id: japan_visa_web_only
     query: "I have a Polish passport. Do I need a visa for a two-week holiday in Japan?"
     expected_keywords: ["visa"]
     expected_agents: [webDataAgent]
-    unexpected_agents: [hotelAgent]
+    unexpected_agents: [ragDataAgent, weatherAgent, hotelAgent]
 
   # Out of scope: the manager must refuse without delegating
   - id: out_of_scope
     query: "Write a Python function that sorts a list of numbers."
-    expected_answer: "I'm sorry, I can only help with travel planning."
+    expected_answer: "I'm sorry, I can't help with that. I am only a travel-planning assistant."
+    judge_final_answer: false
     unexpected_agents: [ragDataAgent, webDataAgent, weatherAgent, hotelAgent]

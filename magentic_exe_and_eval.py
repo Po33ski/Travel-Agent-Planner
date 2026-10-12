@@ -86,8 +86,8 @@ def create_agents(usage_middleware):
     web_data_agent = FoundryAgent(
         project_endpoint=endpoint,
         agent_name="webDataAgent",
-        description="Searches the web for travel information missing from the knowledge base, "
-        "e.g. visa requirements or current events. Fallback only.",
+        description="Searches the web for general country information, e.g. visa requirements, and for "
+        "travel information missing from the knowledge base, e.g. current events.",
         credential=credential,
         middleware=[drop_foreign_tool_contents, usage_middleware, blocked_reply_monitor, log_agent_replies],
     )
@@ -121,6 +121,9 @@ def create_workflow(manager_agent, participants):
         # terminates WITHOUT a final answer, so leave room for all four agents and a retry.
         max_round_count=20,
         max_stall_count=3,  # Consecutive rounds without progress before the manager resets and replans
+        # A reset clears the shared conversation and starts again from the first agent. After the
+        # second reset the workflow terminates instead of repeating the same rounds up to the round limit.
+        max_reset_count=2,
     ).build()
 
     return workflow

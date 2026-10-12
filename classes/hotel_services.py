@@ -33,8 +33,9 @@ def target_currency(language: str) -> str:
     return "PLN" if (language or "").strip().lower().startswith("pl") else "USD"
 
 
-def _force_currency(url: str, currency: str) -> str:
-    """Force booking.com links to the target currency/locale."""
+def _prepare_booking_url(url: str, currency: str, check_in: str | None, check_out: str | None) -> str:
+    """Force booking.com links to the target currency/locale and to the travel dates,
+    so the page opens with the offers for the requested stay."""
     if "booking.com" not in url:
         return url
 
@@ -43,6 +44,10 @@ def _force_currency(url: str, currency: str) -> str:
     query = dict(parse_qsl(parts.query))
     query["selected_currency"] = currency
     query["lang"] = locale["booking_lang"]
+    if check_in:
+        query["checkin"] = check_in
+    if check_out:
+        query["checkout"] = check_out
     return urlunsplit(parts._replace(query=urlencode(query)))
 
 
@@ -69,7 +74,8 @@ class HotelService:
 
         Args:
             city: The city name to search hotels in.
-            check_in: Check-in date in YYYY-MM-DD format (optional).
+            check_in: Check-in date in YYYY-MM-DD format (optional). The dates are
+                not part of the search text; they are added to the booking.com links.
             check_out: Check-out date in YYYY-MM-DD format (optional).
             language: ISO 639-1 language code of the chat, used to pick the
                 target currency: "pl" -> PLN, anything else -> USD.
@@ -85,7 +91,7 @@ class HotelService:
         currency = target_currency(language)
         try:
             response = self.client.search(
-                query=self._build_query(city, check_in, check_out, currency),
+                query=self._build_query(city, currency),
                 search_depth="advanced",
                 max_results=MAX_RESULTS,
                 include_domains=HOTEL_DOMAINS,
@@ -100,7 +106,7 @@ class HotelService:
 
         simplified = [
             {
-                "url": _force_currency(r.get("url", ""), currency),
+                "url": _prepare_booking_url(r.get("url", ""), currency, check_in, check_out),
                 "title": r.get("title", ""),
                 "content": r.get("content", ""),
                 "score": r.get("score", 0.0),
@@ -121,17 +127,16 @@ class HotelService:
         }
 
     @staticmethod
-    def _build_query(city: str, check_in: str | None, check_out: str | None, currency: str) -> str:
-        """Build a search query in the language matching the target currency."""
-        date_hint = ""
-        if check_in:
-            date_hint += f" check-in {check_in}"
-        if check_out:
-            date_hint += f" check-out {check_out}"
+    def _build_query(city: str, currency: str) -> str:
+        """Build a short search query in the language matching the target currency.
 
+        Tavily searches indexed web pages, not live availability. Dates and words such as
+        "price per night" or "booking" in the query do not filter hotel offers; they pull in
+        cruises, flights and forum topics, so the query only names what is searched.
+        """
         if currency == "PLN":
-            return f"hotele {city}{date_hint} cena za noc w złotówkach opinie rezerwacja"
-        return f"hotels in {city}{date_hint} price per night USD rating reviews booking"
+            return f"hotele {city}"
+        return f"hotels in {city}"
 
 
 @tool

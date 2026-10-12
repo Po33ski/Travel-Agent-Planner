@@ -58,3 +58,13 @@ evaluation:
     - task_adherence
     - relevance
     - tool_call_accuracy
+  # Folder with the <agent>_config.yaml files. When an agent's own work is scored, the judge gets
+  # the agent's system prompt from there, so the agent is judged against its own rules.
+  agent_prompts_dir: "agents"
+  # Evaluators skipped for individual agents. The judge sees an agent's function tool calls, but not
+  # the calls of tools that run server-side (knowledge base, web search). task_adherence then fails
+  # the agent for claims it cannot verify, whatever the quality of the answer.
+  agent_evaluator_exclusions:
+    ragDataAgent: [task_adherence]
+    webDataAgent: [task_adherence]
+    travelAgent: [task_adherence]

@@ -5,3 +5,4 @@ responses.json
 tutorials/
 __pycache__/
 *.pyc
+outputs/

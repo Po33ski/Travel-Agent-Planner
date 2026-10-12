@@ -5,7 +5,7 @@
 An AI assistant that helps you plan a trip to a chosen destination anywhere in the world. A **manager agent** plans the work and delegates it to four **specialist agents**, all hosted server-side in **Azure AI Foundry Agent Service**:
 
 - a knowledge base agent that uses **Foundry IQ** as a RAG knowledge base: a travel guide covering 182 cities in Europe, Asia and the Americas, indexed with Azure AI Search
-- a web search agent, used as a fallback for anything the knowledge base does not cover, such as visa requirements or current events
+- a web search agent, used for general country information such as visa requirements, and as a fallback for anything the knowledge base does not cover, such as current events
 - a weather agent that fetches **weather data** from the Visual Crossing API
 - a hotel agent that **searches for hotels** on booking sites through the Tavily Search API
 
@@ -346,7 +346,7 @@ All five agents are **prompt agents** (`PromptAgentDefinition`) hosted in Azure 
 |---|---|---|---|
 | `managerAgent` | `gpt-5.6-luna` | none | Plans the task, picks the next agent, checks progress and writes the final answer |
 | `ragDataAgent` | `gpt-5-mini` | `knowledge_base_retrieve` | Attractions, restaurants, events, transport and practical tips from the travel guide. First choice for destination information |
-| `webDataAgent` | `gpt-5-mini` | `web_search` | Fallback for information the knowledge base did not return |
+| `webDataAgent` | `gpt-5-mini` | `web_search` | General country information such as entry and visa rules, and fallback for information the knowledge base did not return |
 | `weatherAgent` | `gpt-5-mini` | `get_forecast_weather` | Daily weather forecast for the destination and dates |
 | `hotelAgent` | `gpt-5-mini` | `search_for_hotels` | Hotel offers with prices, ratings and booking links |
 
@@ -378,7 +378,7 @@ Details worth knowing:
 
 - **The manager picks agents by name and description.** Each `FoundryAgent` is created with a `description`, and the manager's system prompt lists the same team.
 - **Function tools run locally.** `weatherAgent` and `hotelAgent` get the Python implementations of their tools. When the server-side agent requests a function call, `FoundryAgent` runs the local function and sends the result back. The MCP knowledge base and web search tools run entirely server-side.
-- **Limits.** `max_round_count=20`: one round is one progress check plus one agent turn, and a workflow that reaches the limit ends *without* a final answer. `max_stall_count=3`: after more than three rounds without progress the manager resets the team and replans. A reset clears the shared conversation, so the manager starts again from the first agent and asks for data it already had; the round count is not reset.
+- **Limits.** `max_round_count=20`: one round is one progress check plus one agent turn, and a workflow that reaches the limit ends *without* a final answer. `max_stall_count=3`: after more than three rounds without progress the manager resets the team and replans. A reset clears the shared conversation, so the manager starts again from the first agent and asks for data it already had; the round count is not reset. `max_reset_count=2`: at the second reset the workflow terminates, also *without* a final answer, instead of repeating the same rounds up to the round limit.
 - **No memory between messages.** A Magentic workflow handles exactly one task and accepts a single task message, so a new workflow is built for every user message. The conversation history in Cosmos DB is a record for fine-tuning; it isn't passed back to the agents.
 - **Speech.** The final answer is passed to `text_to_speech` and saved as a WAV file in `outputs/`.
 - **Agents share text answers only.** Magentic passes every agent's reply to the other agents, including the function call and its raw result. An agent that already has a server-side conversation would then send a tool result without the matching call, and the service rejects it with *"No tool call found for function call output"*. The `drop_foreign_tool_contents` middleware (`utils/agent_middleware.py`) on every agent removes these tool contents from the incoming messages. This also keeps raw tool output out of the other agents' context.
@@ -389,19 +389,21 @@ Details worth knowing:
 
 **`managerAgent`**
 
-- **Delegation order.** Destination information goes to `ragDataAgent` first, and to `webDataAgent` only for what the knowledge base did not return. Weather is mandatory whenever a destination is mentioned. Hotels are searched only when the user asks about accommodation.
-- **Asking an agent again.** Allowed in two cases only: several cities (one instruction per city), and a wrong or weak reply (one more attempt, with an instruction that says what was wrong). Otherwise an agent that has already replied for a city, with data, "not found" or an error, is not asked again. `hotelAgent` is asked once per city and dates: missing prices or links are not a reason to ask again.
+- **Scope.** A request that is not directly about travel or trip planning goes to no agent: the manager marks it as satisfied in the first progress check and replies exactly *"I'm sorry, I can't help with that. I am only a travel-planning assistant."*
+- **Country information only.** A request for general information about a country or for entry rules such as visas, with no trip to plan, goes to `webDataAgent` alone. The other three agents are not asked.
+- **Delegation order for a trip.** Destination information goes to `ragDataAgent` first, and to `webDataAgent` only for what the knowledge base did not return. Weather is mandatory whenever the request names a city or place to visit, also without dates and when the user asks only about attractions, food or hotels. Hotels are searched only when the user asks about accommodation.
+- **Asking an agent again.** Allowed in two cases only: several cities (one instruction per city), and a wrong or weak reply (one more attempt, with an instruction that says what was wrong). Otherwise an agent that has already replied for a city, with data, "not found" or an error, is not asked again. `hotelAgent` is asked once per city and dates, for 2 or 3 hotels where only the name is required: missing prices or links are not a reason to ask again.
 - **Finishing.** As soon as every needed agent has replied, the manager marks the request as satisfied in the progress check and writes the final answer, naming anything still missing. It never picks an agent a third time for the same city.
 - **No questions to the user.** The user cannot be asked during a task, so the manager uses sensible defaults and states its assumptions in the answer.
-- **Accuracy first.** The final answer uses only facts reported by the team, and keeps citation markers, prices, currencies and links exactly as the agents returned them. If the team found nothing, the reply is exactly: *"I'm sorry, I don't have that information."*
+- **Accuracy first.** The final answer uses only facts reported by the team, and keeps citation markers, prices, currencies and links exactly as the agents returned them. If the team found nothing at all, the reply is exactly: *"I'm sorry, I don't have that information."* If only a part is missing, the manager gives what was found and says which part could not be found.
 - **Answer structure.** Weather summary, then the (day-by-day) plan, then accommodation (only when hotels were searched), then transport and practical tips. Written in the user's language, maximum 500 words.
 
 **Specialist agents** share these rules: reply to the manager, not to the user; do only the assigned task and say when something is outside their scope; ask no follow-up questions; never answer from their own knowledge; call their tool again only for another city or when the result is wrong or too weak, and never repeat an identical call. In addition:
 
 - **`ragDataAgent`** always calls `knowledge_base_retrieve`, uses only passages about the requested destination, and cites every fact with the exact source marker returned by the tool. It ends with a *"Not found in the knowledge base:"* line, so the manager knows what to send to web search.
-- **`webDataAgent`** searches only for the items it was asked about, prefers official sources and gives each finding with its source. It does not search for weather or hotels.
+- **`webDataAgent`** searches for travel information missing from the knowledge base and for general information about any country (entry and visa rules, currency, language, safety, customs, public holidays). It searches only for the items it was asked about, prefers official sources and gives each finding with its source. It does not search for weather or hotels.
 - **`weatherAgent`** reports max/min temperature, precipitation probability, wind speed and conditions for each day, and bases packing tips on the actual data.
-- **`hotelAgent`** recommends 2 or 3 hotels, preferring single-hotel pages. Only the hotel name is required; price per night, rating, highlights and the booking link are added when the results contain them. The travel dates are always passed when they are known. It judges the results itself, ignores pages that are not about a specific hotel and never repeats an identical search, because the same city, dates and language return the same results. A link is given only when it is the page of that hotel. Prices are shown only in the currency returned by the tool (PLN or USD), never converted. A missing price is reported as *"price not available"*.
+- **`hotelAgent`** recommends 2 or 3 hotels, preferring single-hotel pages. Only the hotel name is required; price per night, rating, highlights and the booking link are added when the results contain them. The travel dates are always passed when they are known. It judges the results itself, ignores pages that are not about a specific hotel and never repeats an identical search, because the same city, dates and language return the same results. A hotel gets a link only when it is the page of that hotel. After the hotels the agent adds one general link to a booking.com page for the city, which already carries the travel dates. Prices are shown only in the currency returned by the tool (PLN or USD), never converted. A missing price is reported as *"price not available"*.
 
 ---
 
@@ -410,7 +412,7 @@ Details worth knowing:
 | Tool | Agent | Type | Where it runs | Purpose |
 |---|---|---|---|---|
 | `knowledge_base_retrieve` | `ragDataAgent` | MCP (Foundry IQ) | Server-side | RAG retrieval from the travel guide |
-| `web_search` | `webDataAgent` | Built-in `WebSearchTool` | Server-side | Fallback for information missing from the knowledge base |
+| `web_search` | `webDataAgent` | Built-in `WebSearchTool` | Server-side | General country information, and fallback for information missing from the knowledge base |
 | `get_forecast_weather` | `weatherAgent` | `FunctionTool` | Locally, in `agent_execution.py` | Daily forecast for a location and date range |
 | `search_for_hotels` | `hotelAgent` | `FunctionTool` | Locally, in `agent_execution.py` | Hotel search on booking sites via Tavily |
 
@@ -449,17 +451,17 @@ Hotel search uses the [Tavily Search API](https://docs.tavily.com) (`tavily-pyth
 | Parameter | Required | Description |
 |---|---|---|
 | `city` | Yes | City to search for hotels in |
-| `check_in` | No | Check-in date, `YYYY-MM-DD` |
+| `check_in` | No | Check-in date, `YYYY-MM-DD`. Added to the booking.com links, not to the search text |
 | `check_out` | No | Check-out date, `YYYY-MM-DD`. Use only with `check_in` |
 | `language` | No | ISO 639-1 code of the conversation language. `pl` returns prices in PLN, any other value in USD |
 
 How it works:
 
 1. **Target currency.** `language` decides the single currency used for the whole search: `pl` → PLN, anything else → USD.
-2. **Query.** The query is built in the matching language, for example `hotele Kraków check-in 2026-10-10 check-out 2026-10-12 cena za noc w złotówkach opinie rezerwacja` for PLN, or `hotels in Lisbon ... price per night USD rating reviews booking` for USD.
+2. **Query.** The query is short and in the matching language: `hotele Kraków` for PLN, `hotels in Lisbon` for USD. Tavily searches indexed web pages, not live availability, so dates and words such as "price per night" or "booking" do not filter offers; in the query they pulled in cruises, flights and forum topics.
 3. **Search.** Tavily runs an `advanced` search limited to `booking.com`, `hotels.com` and `tripadvisor.com`, with up to 8 results and a country filter matching the currency (Poland or United States).
 4. **Post-processing.**
-   - booking.com links get `selected_currency` and `lang` query parameters, so the booking page shows the same currency as the search results.
+   - booking.com links get `selected_currency` and `lang` query parameters, and `checkin` / `checkout` when the dates are known, so the booking page opens in the target currency with the offers for the requested stay.
    - Each result is marked `is_direct: true` when its URL points at a single hotel's page (`/hotel/...`, excluding `/reviews/` pages). Direct pages are sorted first, because they are more useful than city or category overview pages.
 
 Example result:
@@ -472,7 +474,7 @@ Example result:
   "target_currency": "PLN",
   "results": [
     {
-      "url": "https://www.booking.com/hotel/pl/...html?selected_currency=PLN&lang=pl",
+      "url": "https://www.booking.com/hotel/pl/...html?selected_currency=PLN&lang=pl&checkin=2026-10-10&checkout=2026-10-12",
       "title": "...",
       "content": "...",
       "score": 0.87,
@@ -570,15 +572,16 @@ Each test case has an `id` and a `query`. Optional fields add rule checks:
 | `expected_answer` | Text the final answer must contain exactly, for example the refusal of an out-of-scope request |
 | `expected_agents` | Agents that must be called. Workflow only |
 | `unexpected_agents` | Agents that must not be called, for example `hotelAgent` when hotels were not requested. Workflow only |
+| `judge_final_answer` | `false` skips the LLM judge for the final answer. Used for the out-of-scope request: the judge does not know the assistant's scope and scores the correct refusal as a failed task. The rule checks still apply |
 
-The six prompts cover a full trip plan, destination information without hotels, a weather question, a request in Polish, a question that needs the web search fallback and an out-of-scope request. Dates are relative ("next week"), so the weather forecast stays available.
+The six prompts cover a full trip plan, destination information without hotels, a weather question, a request in Polish, a visa question that only web search may answer and an out-of-scope request. Dates are relative ("next week"), so the weather forecast stays available.
 
 ### What is measured
 
 | Evaluation | Workflow | Single agent | How |
 |---|---|---|---|
 | Final answer | `evaluate_final_answer` | `evaluate_agent_response` | Foundry built-in evaluators with an LLM judge: `task_completion`, `intent_resolution`, `relevance`, `coherence` (`final_answer_evaluators` in `config.yaml`) |
-| Agents | `evaluate_agents`: every specialist separately | `evaluate_agent_response`: the agent's own work, tool use included | Foundry built-in evaluators: `task_adherence`, `relevance`, `tool_call_accuracy` (`agent_evaluators`). The tool evaluator is skipped for agents without function tools |
+| Agents | `evaluate_agents`: every specialist separately | `evaluate_agent_response`: the agent's own work, tool use included | Foundry built-in evaluators: `task_adherence`, `relevance`, `tool_call_accuracy` (`agent_evaluators`). The tool evaluator is skipped for agents without function tools, and `task_adherence` for agents with server-side tools (`agent_evaluator_exclusions`) |
 | Rules | `check_final_answer` | `check_final_answer` | Local checks without model calls: the word limit of the answer and the optional fields of the test case |
 | Tokens | `count_workflow_tokens` | `count_workflow_tokens` | Input, cached input, output, reasoning and total tokens and the number of calls, per agent and in total |
 
@@ -605,13 +608,16 @@ The two reports have the same format. Compare the metrics in `summary.final_answ
 | `timeout_seconds` | How long to wait for one Foundry evaluation run |
 | `max_answer_words` | Word limit of the final answer, as set in the system prompt of the manager (`magentic`) and of the single agent (`single_agent`) |
 | `final_answer_evaluators`, `agent_evaluators` | Foundry built-in evaluator names |
+| `agent_evaluator_exclusions` | Evaluators skipped for individual agents, by agent name |
+| `agent_prompts_dir` | Folder with the `<agent>_config.yaml` files whose system prompts are given to the judge |
 | `evaluate_agents` | `false` skips the agent evaluation and saves judge calls |
 
 ### Cost and limits
 
 - Every run calls the models, and every Foundry evaluation run calls the judge model. One prompt costs one workflow run plus up to five evaluation runs for the team (final answer and four specialists), or one agent run plus two evaluation runs for the single agent. Start with one or two test cases.
 - The default judge is the `gpt-5.6-luna` deployment, the model that also writes the final answer in both set-ups. Point `judge_model_secret` at another deployment to avoid a model judging its own text.
-- `task_adherence` judges an agent against its instructions, but the system prompts live server-side and are not part of the evaluated conversation, so the judge sees only the request and the answer.
+- **The judge gets the agent's system prompt.** The prompts live server-side and are not part of the conversation, so `EvaluateService` reads them from `agents/<agent>_config.yaml` and adds them as the system message when an agent's own work is scored (`evaluate_agents`, and the agent evaluation of the single agent). Without it the judge knows only the instruction the agent received and fails the agent for everything the instruction asked for and the agent's rules do not require, for example a hotel price that the search did not return. The judge is only accurate when the deployed agents use the same prompts as the local files. The final answer is scored without a system prompt, the same way for the workflow and for the single agent. The report lists the agents judged this way in `agents_judged_with_prompt`.
+- The judge sees an agent's function tool calls and their results, but not the calls of tools that run server-side (knowledge base, web search): the evaluated conversation holds only the agent's text. `task_adherence` then fails the agent for claims it cannot verify, so it is excluded for `ragDataAgent`, `webDataAgent` and `travelAgent` in `agent_evaluator_exclusions`.
 - Foundry documents limited support of the tool evaluators for web search calls.
 
 ---

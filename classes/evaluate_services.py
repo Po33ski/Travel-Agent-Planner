@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 
 import yaml
-from agent_framework import AgentMiddleware, add_usage_details, evaluate_agent, evaluate_workflow
+from agent_framework import AgentMiddleware, Message, add_usage_details, evaluate_agent, evaluate_workflow
 from agent_framework.foundry import FoundryEvals
 
 # Token counts reported in usage_details of an agent response. The input count includes
@@ -44,6 +44,42 @@ class TokenUsageMiddleware(AgentMiddleware):
         self.usage_by_agent[agent_name] = add_usage_details(self.usage_by_agent.get(agent_name), usage)
 
 
+class _AgentEvaluators:
+    """
+    Evaluation provider that scores an agent against its own rules.
+    It gives the judge the agent's system prompt and applies agent_evaluator_exclusions.
+    Without the system prompt the judge knows only the instruction the agent received, and
+    fails the agent for everything the instruction asked for and the agent's rules do not require.
+    """
+
+    name = "Microsoft Foundry"
+
+    def __init__(self, service, agent_name=None):
+        """
+        Args:
+            service: the EvaluateService that owns the settings.
+            agent_name: the scored agent. Leave empty for the agents of a workflow:
+                evaluate_workflow() calls evaluate() once per agent and ends the evaluation
+                name with " — <agent name>", which is the only place the agent can be read from.
+        """
+        self._service = service
+        self._agent_name = agent_name
+
+    async def evaluate(self, items, *, eval_name="Agent Framework Eval"):
+        agent_name = self._agent_name or next(
+            (name for name in self._service.known_agent_names() if eval_name.endswith(f" — {name}")), None
+        )
+
+        system_prompt = self._service.agent_system_prompts.get(agent_name)
+        if system_prompt:
+            self._service.agents_judged_with_prompt.add(agent_name)
+            for item in items:
+                item.conversation = [Message("system", [system_prompt]), *item.conversation]
+
+        evaluators = self._service._agent_evaluators_for(agent_name)
+        return await self._service._foundry_evals(evaluators).evaluate(items, eval_name=eval_name)
+
+
 class EvaluateService:
     """
     Evaluation of a single agent or a multi-agent workflow: answer quality, rule checks and token usage.
@@ -68,6 +104,10 @@ class EvaluateService:
         self.output_dir = settings["output_dir"]
         self.final_answer_evaluators = settings["final_answer_evaluators"]
         self.agent_evaluators = settings["agent_evaluators"]
+        self.agent_evaluator_exclusions = settings["agent_evaluator_exclusions"]
+        # Agent name -> system prompt, given to the judge when the agent's own work is scored
+        self.agent_system_prompts = self._load_agent_system_prompts(settings["agent_prompts_dir"])
+        self.agents_judged_with_prompt = set()
         self.agent_evaluation_enabled = settings["evaluate_agents"]
         self.timeout_seconds = settings["timeout_seconds"]
         # Add this instance to the middleware of every evaluated agent
@@ -144,26 +184,27 @@ class EvaluateService:
     async def evaluate_agents(self, workflow, workflow_result, eval_name):
         """Score every specialist agent of the workflow separately: the steps that led to the final answer.
 
-        The result holds one entry per agent under "agents". Tool evaluators are skipped
-        for agents without function tools.
+        The result holds one entry per agent under "agents". The judge gets the agent's system
+        prompt. Tool evaluators are skipped for agents without function tools, and the evaluators
+        listed for an agent in agent_evaluator_exclusions are skipped for that agent.
         """
         results = await evaluate_workflow(
             workflow=workflow,
             workflow_result=workflow_result,
-            evaluators=self._foundry_evals(self.agent_evaluators),
+            evaluators=_AgentEvaluators(self),
             eval_name=eval_name,
             include_overall=False,
         )
         return self._results_to_dict(results[0])
 
     # ------------------------------------------------------------------ single agent evaluation
-    async def evaluate_agent_response(self, agent, query, response, evaluators, eval_name):
-        """Score one response of a single agent with the given Foundry evaluators (LLM judge)."""
+    async def evaluate_agent_response(self, agent, query, response, evaluation_provider, eval_name):
+        """Score one response of a single agent with the given evaluation provider (LLM judge)."""
         results = await evaluate_agent(
             agent=agent,
             queries=query,
             responses=response,
-            evaluators=self._foundry_evals(evaluators),
+            evaluators=evaluation_provider,
             eval_name=eval_name,
         )
         return self._results_to_dict(results[0])
@@ -236,9 +277,12 @@ class EvaluateService:
 
         # The evaluation name is shown in the Foundry portal
         eval_name = f"{workflow_name} - {test_case['id']}"
-        record["final_answer_evaluation"] = await self._run_evaluation(
-            self.evaluate_final_answer(workflow, workflow_result, eval_name)
-        )
+        if test_case.get("judge_final_answer", True):
+            record["final_answer_evaluation"] = await self._run_evaluation(
+                self.evaluate_final_answer(workflow, workflow_result, eval_name)
+            )
+        else:
+            record["final_answer_evaluation"] = self._skipped_evaluation()
         if self.agent_evaluation_enabled:
             # The manager is not a workflow executor; without a specialist call (e.g. a refused
             # request) there is nothing to evaluate per agent
@@ -247,7 +291,7 @@ class EvaluateService:
                     self.evaluate_agents(workflow, workflow_result, eval_name)
                 )
             else:
-                record["agent_evaluation"] = {"status": "skipped", "error": None, "items": [], "agents": {}}
+                record["agent_evaluation"] = self._skipped_evaluation()
 
         return record
 
@@ -255,8 +299,9 @@ class EvaluateService:
         """Run one test case through the single agent and evaluate the run.
 
         The record has the same format as the one of evaluate_test_case: the final answer is
-        scored with final_answer_evaluators and the agent's work (tool use included) with
-        agent_evaluators. Errors are recorded instead of raised.
+        scored with final_answer_evaluators, as for a workflow, and the agent's work (tool use
+        included) with agent_evaluators against the agent's system prompt. Errors are recorded
+        instead of raised.
         """
         record = {"id": test_case["id"], "query": test_case["query"]}
 
@@ -275,15 +320,22 @@ class EvaluateService:
 
         # The evaluation name is shown in the Foundry portal
         eval_name = f"{agent.name} - {test_case['id']}"
-        record["final_answer_evaluation"] = await self._run_evaluation(
-            self.evaluate_agent_response(
-                agent, test_case["query"], response, self.final_answer_evaluators, f"{eval_name} - final answer"
+        if test_case.get("judge_final_answer", True):
+            record["final_answer_evaluation"] = await self._run_evaluation(
+                self.evaluate_agent_response(
+                    agent,
+                    test_case["query"],
+                    response,
+                    self._foundry_evals(self.final_answer_evaluators),
+                    f"{eval_name} - final answer",
+                )
             )
-        )
+        else:
+            record["final_answer_evaluation"] = self._skipped_evaluation()
         if self.agent_evaluation_enabled:
             results = await self._run_evaluation(
                 self.evaluate_agent_response(
-                    agent, test_case["query"], response, self.agent_evaluators, f"{eval_name} - agent"
+                    agent, test_case["query"], response, _AgentEvaluators(self, agent.name), f"{eval_name} - agent"
                 )
             )
             record["agent_evaluation"] = {
@@ -302,6 +354,8 @@ class EvaluateService:
             "workflow_name": workflow_name,
             "created_at": datetime.now().isoformat(timespec="seconds"),
             "judge_model": self.judge_client.model,
+            # Agents whose system prompt the judge received when their own work was scored
+            "agents_judged_with_prompt": sorted(self.agents_judged_with_prompt),
             "summary": self.summarize(case_records),
             "cases": case_records,
         }
@@ -316,7 +370,7 @@ class EvaluateService:
         judge_tokens = 0
         for record in completed:
             for target, item in self._evaluated_items(record):
-                judge_tokens += (item["judge_tokens"] or {}).get("total_tokens") or 0
+                judge_tokens += self._judge_tokens(item)
                 if target == "final_answer":
                     final_answer_scores.extend(item["scores"])
                 else:
@@ -347,7 +401,7 @@ class EvaluateService:
                     )
                     for name in agent_names
                 },
-                # Tokens used by the LLM judge, when Foundry reports them
+                # Tokens used by the LLM judge
                 "judge_total": judge_tokens,
             },
         }
@@ -418,6 +472,29 @@ class EvaluateService:
         """Return the Foundry evaluation provider for the given built-in evaluator names."""
         return FoundryEvals(client=self.judge_client, evaluators=evaluators, timeout=self.timeout_seconds)
 
+    def known_agent_names(self):
+        """Return the agents that have a system prompt or evaluator exclusions."""
+        return set(self.agent_system_prompts) | set(self.agent_evaluator_exclusions)
+
+    @staticmethod
+    def _load_agent_system_prompts(prompts_dir):
+        """Read the agents' system prompts from the <agent>_config.yaml files: agent name -> prompt.
+
+        These are the local files the agents are deployed from. The judge is only accurate
+        when the deployed agents use the same prompts.
+        """
+        prompts = {}
+        for path in sorted(Path(prompts_dir).glob("*_config.yaml")):
+            with open(path, "r", encoding="utf-8") as file:
+                agent_config = yaml.safe_load(file)
+            prompts[agent_config["agent_name"]] = agent_config["system_prompt"]
+        return prompts
+
+    def _agent_evaluators_for(self, agent_name):
+        """Return agent_evaluators without the evaluators excluded for this agent."""
+        excluded = self.agent_evaluator_exclusions.get(agent_name, [])
+        return [evaluator for evaluator in self.agent_evaluators if evaluator not in excluded]
+
     def _results_to_dict(self, results):
         """Convert EvalResults and its per-agent sub-results into JSON-serialisable data."""
         return {
@@ -440,6 +517,11 @@ class EvaluateService:
             ],
             "agents": {name: self._results_to_dict(sub) for name, sub in results.sub_results.items()},
         }
+
+    @staticmethod
+    def _skipped_evaluation():
+        """Return the result of an evaluation that was not run, in the result format."""
+        return {"status": "skipped", "error": None, "items": [], "agents": {}}
 
     @staticmethod
     async def _run_evaluation(evaluation):
@@ -479,6 +561,23 @@ class EvaluateService:
         for agent_name, results in record.get("agent_evaluation", {}).get("agents", {}).items():
             for item in results["items"]:
                 yield agent_name, item
+
+    @staticmethod
+    def _judge_tokens(item):
+        """Return the tokens the LLM judge used for one judged item.
+
+        Foundry reports the usage per evaluator in the details of every score; the usage of
+        the item itself is used when it is given.
+        """
+        item_usage = item["judge_tokens"] or {}
+        if item_usage.get("total_tokens"):
+            return item_usage["total_tokens"]
+
+        total = 0
+        for score in item["scores"]:
+            details = score["details"] if isinstance(score["details"], dict) else {}
+            total += (details.get("usage") or {}).get("total_tokens") or 0
+        return total
 
     @staticmethod
     def _aggregate_scores(scores):
