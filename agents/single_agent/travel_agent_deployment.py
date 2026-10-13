@@ -3,8 +3,8 @@ import sys
 import yaml
 from pathlib import Path
 
-# This script lives in agents/; add the project root so the classes package can be imported
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# This script lives in agents/single_agent/; add the project root so the classes package can be imported
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from azure.identity import DefaultAzureCredential

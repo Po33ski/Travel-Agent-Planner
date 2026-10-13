@@ -14,7 +14,7 @@ from utils.agent_middleware import BlockedReplyMonitor, log_tool_calls
 # WARNING shows tool-loop problems such as "Maximum consecutive function call errors reached"
 logging.getLogger("agent_framework").setLevel(logging.WARNING)
 
-# Must match agent_name in agents/travel_agent_config.yaml.
+# Must match agent_name in agents/single_agent/travel_agent_config.yaml.
 # Also used in the report file name and in the Foundry evaluation names.
 AGENT_NAME = "travelAgent"
 

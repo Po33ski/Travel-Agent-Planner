@@ -11,7 +11,7 @@ An AI assistant that helps you plan a trip to a chosen destination anywhere in t
 
 The team uses **two LLMs**: `gpt-5.6-luna` for the manager, which does the planning and writes the final answer, and `gpt-5-mini` for the four specialist agents.
 
-A typical answer includes a weather summary for the travel dates, a day-by-day plan with citations to the travel guide, hotel suggestions with prices and booking links (when the user asks about accommodation), and transport and practical tips. The final answer is also read out with **Azure AI Speech** and saved as an audio file.
+A typical answer includes a weather summary for the travel dates, a day-by-day plan based on the travel guide, hotel suggestions with prices and booking links (when the user asks about accommodation), and transport and practical tips. The final answer is also read out with **Azure AI Speech** and saved as an audio file.
 
 Every user signs in with a name. Their profile, preferences and conversation history (in a chat fine-tuning format) are kept in **Azure Cosmos DB**, and **Azure AI Language** detects the language of each question and stores it as a preference. All endpoints, resource names and keys live in **Azure Key Vault**, so the only setting a script needs is the Key Vault URL.
 
@@ -42,7 +42,7 @@ Every user signs in with a name. Their profile, preferences and conversation his
 | `agent_execution.py` | Interactive command-line chat. Asks for the user name, builds the Magentic workflow, runs the weather and hotel search tools locally, saves the conversation and preferences to Cosmos DB and converts the final answer to speech |
 | `magentic_exe_and_eval.py` | Runs the test prompts through the Magentic workflow, evaluates every run and saves the report in `outputs/` |
 | `single_agent_exe_and_eval.py` | The same evaluation for the single agent `travelAgent`, which does the work of the whole team alone |
-| `agents/travel_agent_deployment.py`, `agents/travel_agent_config.yaml` | The single agent `travelAgent` with all four tools. Used only by `single_agent_exe_and_eval.py` |
+| `agents/single_agent/travel_agent_deployment.py`, `agents/single_agent/travel_agent_config.yaml` | The single agent `travelAgent`: one agent with all four tools and the same rules as the team. Used only by `single_agent_exe_and_eval.py` |
 | `config.yaml` | Guardrail (RAI) settings shared by all agents, profile TTL for Cosmos DB, the NLP sentiment threshold and the evaluation settings |
 | `classes/evaluate_services.py` | `EvaluateService`: Foundry evaluators for the final answer and for every agent, rule checks, token counting and the report, for a workflow or a single agent. `TokenUsageMiddleware`: records the token usage of every agent call |
 | `classes/secret_manager_services.py` | `SecretManager`: reads secrets from Key Vault and caches them in memory |
@@ -191,7 +191,7 @@ Each script creates or updates the `StrictGuardrail` RAI policy, then creates a 
 Optional: deploy the single agent `travelAgent`. The chat does not use it; it is needed only to compare a single agent with the team (see [Evaluation](#evaluation)).
 
 ```powershell
-python agents/travel_agent_deployment.py
+python agents/single_agent/travel_agent_deployment.py
 ```
 
 > Run the scripts by path, as shown. `python -m agents.<script>` does not work when the `openai-agents` package is installed, because that package is also imported as `agents`.
@@ -395,12 +395,12 @@ Details worth knowing:
 - **Asking an agent again.** Allowed in two cases only: several cities (one instruction per city), and a wrong or weak reply (one more attempt, with an instruction that says what was wrong). Otherwise an agent that has already replied for a city, with data, "not found" or an error, is not asked again. `hotelAgent` is asked once per city and dates, for 2 or 3 hotels where only the name is required: missing prices or links are not a reason to ask again.
 - **Finishing.** As soon as every needed agent has replied, the manager marks the request as satisfied in the progress check and writes the final answer, naming anything still missing. It never picks an agent a third time for the same city.
 - **No questions to the user.** The user cannot be asked during a task, so the manager uses sensible defaults and states its assumptions in the answer.
-- **Accuracy first.** The final answer uses only facts reported by the team, and keeps citation markers, prices, currencies and links exactly as the agents returned them. If the team found nothing at all, the reply is exactly: *"I'm sorry, I don't have that information."* If only a part is missing, the manager gives what was found and says which part could not be found.
+- **Accuracy first.** The final answer uses only facts reported by the team, keeps prices, currencies and links exactly as the agents returned them, and adds no citation markers. If the team found nothing at all, the reply is exactly: *"I'm sorry, I don't have that information."* If only a part is missing, the manager gives what was found and says which part could not be found.
 - **Answer structure.** Weather summary, then the (day-by-day) plan, then accommodation (only when hotels were searched), then transport and practical tips. Written in the user's language, maximum 500 words.
 
 **Specialist agents** share these rules: reply to the manager, not to the user; do only the assigned task and say when something is outside their scope; ask no follow-up questions; never answer from their own knowledge; call their tool again only for another city or when the result is wrong or too weak, and never repeat an identical call. In addition:
 
-- **`ragDataAgent`** always calls `knowledge_base_retrieve`, uses only passages about the requested destination, and cites every fact with the exact source marker returned by the tool. It ends with a *"Not found in the knowledge base:"* line, so the manager knows what to send to web search.
+- **`ragDataAgent`** always calls `knowledge_base_retrieve`, uses only passages about the requested destination and starts its reply with *"From the knowledge base:"*. It adds no citation markers: the knowledge base returns passages without them, so a marker such as `【6:0†source】` would be invented. It ends with a *"Not found in the knowledge base:"* line, so the manager knows what to send to web search.
 - **`webDataAgent`** searches for travel information missing from the knowledge base and for general information about any country (entry and visa rules, currency, language, safety, customs, public holidays). It searches only for the items it was asked about, prefers official sources and gives each finding with its source. It does not search for weather or hotels.
 - **`weatherAgent`** reports max/min temperature, precipitation probability, wind speed and conditions for each day, and bases packing tips on the actual data.
 - **`hotelAgent`** recommends 2 or 3 hotels, preferring single-hotel pages. Only the hotel name is required; price per night, rating, highlights and the booking link are added when the results contain them. The travel dates are always passed when they are known. It judges the results itself, ignores pages that are not about a specific hotel and never repeats an identical search, because the same city, dates and language return the same results. A hotel gets a link only when it is the page of that hotel. After the hotels the agent adds one general link to a booking.com page for the city, which already carries the travel dates. Prices are shown only in the currency returned by the tool (PLN or USD), never converted. A missing price is reported as *"price not available"*.
@@ -558,7 +558,7 @@ Two scripts measure answer quality and token usage on the same set of test promp
 | Script | What it evaluates |
 |---|---|
 | `magentic_exe_and_eval.py` | The Magentic workflow of `agent_execution.py`: the manager and the four specialist agents |
-| `single_agent_exe_and_eval.py` | `travelAgent`: one prompt agent on `gpt-5.6-luna` with all four tools (knowledge base, web search, weather, hotel search), as on the `single-agent` branch |
+| `single_agent_exe_and_eval.py` | `travelAgent` (`agents/single_agent/`): one prompt agent on `gpt-5.6-luna` with all four tools (knowledge base, web search, weather, hotel search). Its system prompt is modelled on the `single-agent` branch and carries the same rules as the team: scope and refusal sentence, web search only for country information, knowledge base first, mandatory weather, 2 or 3 hotels, the same answer structure and the 500-word limit |
 
 Both scripts only run and evaluate the agents. They do not ask for a user name, do not write to Cosmos DB and do not produce speech, so test prompts never end up in a user's conversation history. All evaluation logic is in `EvaluateService` (`classes/evaluate_services.py`).
 
@@ -572,6 +572,8 @@ Each test case has an `id` and a `query`. Optional fields add rule checks:
 | `expected_answer` | Text the final answer must contain exactly, for example the refusal of an out-of-scope request |
 | `expected_agents` | Agents that must be called. Workflow only |
 | `unexpected_agents` | Agents that must not be called, for example `hotelAgent` when hotels were not requested. Workflow only |
+| `expected_tools` | Tools that must be called. Single agent only |
+| `unexpected_tools` | Tools that must not be called, for example `search_for_hotels` when hotels were not requested. Single agent only |
 | `judge_final_answer` | `false` skips the LLM judge for the final answer. Used for the out-of-scope request: the judge does not know the assistant's scope and scores the correct refusal as a failed task. The rule checks still apply |
 
 The six prompts cover a full trip plan, destination information without hotels, a weather question, a request in Polish, a visa question that only web search may answer and an out-of-scope request. Dates are relative ("next week"), so the weather forecast stays available.
@@ -580,14 +582,18 @@ The six prompts cover a full trip plan, destination information without hotels, 
 
 | Evaluation | Workflow | Single agent | How |
 |---|---|---|---|
-| Final answer | `evaluate_final_answer` | `evaluate_agent_response` | Foundry built-in evaluators with an LLM judge: `task_completion`, `intent_resolution`, `relevance`, `coherence` (`final_answer_evaluators` in `config.yaml`) |
-| Agents | `evaluate_agents`: every specialist separately | `evaluate_agent_response`: the agent's own work, tool use included | Foundry built-in evaluators: `task_adherence`, `relevance`, `tool_call_accuracy` (`agent_evaluators`). The tool evaluator is skipped for agents without function tools, and `task_adherence` for agents with server-side tools (`agent_evaluator_exclusions`) |
-| Rules | `check_final_answer` | `check_final_answer` | Local checks without model calls: the word limit of the answer and the optional fields of the test case |
+| Final answer | `evaluate_final_answer` | `evaluate_agent_final_answer` | Foundry built-in evaluators with an LLM judge: `task_completion`, `intent_resolution`, `relevance`, `coherence` (`final_answer_evaluators` in `config.yaml`) |
+| Agents | `evaluate_agents`: every specialist separately | `evaluate_agent_work`: the agent's own work, tool use included | Foundry built-in evaluators: `task_adherence`, `relevance`, `tool_call_accuracy` (`agent_evaluators`), minus the evaluators excluded for the agent (`agent_evaluator_exclusions`). Foundry reads the agents' stored responses itself (`agent_evaluation_source`) |
+| Rules | `check_final_answer` with the agents that were called | `check_final_answer` with the tools that were called (`count_tool_calls`) | Local checks without model calls: the word limit of the answer and the optional fields of the test case |
 | Tokens | `count_workflow_tokens` | `count_workflow_tokens` | Input, cached input, output, reasoning and total tokens and the number of calls, per agent and in total |
 
-The Foundry evaluators run in the Foundry project, not locally: the script uploads the conversation and waits for the evaluation run. The runs are also listed in the Foundry portal under **Evaluations**.
+The Foundry evaluators run in the Foundry project, not locally. The runs are also listed in the Foundry portal under **Evaluations**. What the judge receives depends on what is scored:
 
-**Token counting.** `TokenUsageMiddleware` is added to every `FoundryAgent`. After each agent call it reads `usage_details` from the response and adds it to the totals of that agent. The Magentic manager is called by the orchestrator and does not appear in the workflow events as an agent, so the middleware is the only place that sees its usage.
+- **Final answer:** the script uploads the user's request and the final answer. This is the same for the workflow and for the single agent, so the two can be compared.
+- **Agents** (`agent_evaluation_source: responses`, the default): the script sends only the ids of the agents' responses. Every agent call is a response stored in the Foundry project; Foundry retrieves it with its input, its output and every tool call, so the judge also sees the calls and results of the server-side tools (knowledge base, web search).
+- **Agents** (`agent_evaluation_source: conversation`): the script uploads the conversation itself. The judge then sees function tools only, because the framework leaves the server-side tool calls out, and it gets the agent's system prompt from `agents/<agent>_config.yaml`. Kept as a fallback.
+
+**Token counting.** `TokenUsageMiddleware` is added to every `FoundryAgent`. After each agent call it reads `usage_details` from the response and adds it to the totals of that agent, and it records the response id that the agent evaluation sends to Foundry. The Magentic manager is called by the orchestrator and does not appear in the workflow events as an agent, so the middleware is the only place that sees its usage.
 
 ### Report
 
@@ -595,6 +601,8 @@ Each script writes `outputs/evaluation_<name>_<timestamp>.json`, where the name 
 
 - `summary`: number of runs and failed runs, average duration, passed / failed counts and average score per metric (final answer, rule checks, each agent), and tokens in total, on average per run and per agent.
 - `cases`: one record per run with the query, the final answer, the duration, the token usage, the rule checks and the scores with the judge's explanations.
+
+The single agent's records also hold `called_tools`: the tools found in the agent's response and how often each was called. Function tools (`get_forecast_weather`, `search_for_hotels`) are always there. The server-side tools (`knowledge_base_retrieve`, `web_search`) appear only when the service reports their calls, so the test prompts list them only under `unexpected_tools`.
 
 The two reports have the same format. Compare the metrics in `summary.final_answer`, `summary.rule_checks` and `summary.tokens`.
 
@@ -608,17 +616,19 @@ The two reports have the same format. Compare the metrics in `summary.final_answ
 | `timeout_seconds` | How long to wait for one Foundry evaluation run |
 | `max_answer_words` | Word limit of the final answer, as set in the system prompt of the manager (`magentic`) and of the single agent (`single_agent`) |
 | `final_answer_evaluators`, `agent_evaluators` | Foundry built-in evaluator names |
-| `agent_evaluator_exclusions` | Evaluators skipped for individual agents, by agent name |
-| `agent_prompts_dir` | Folder with the `<agent>_config.yaml` files whose system prompts are given to the judge |
+| `agent_evaluation_source` | Where the judge gets an agent's work from: `responses` (Foundry reads the stored responses) or `conversation` (the script uploads the conversation) |
+| `agent_evaluator_exclusions` | Evaluators skipped for individual agents, by agent name, separately for each `agent_evaluation_source` |
+| `agent_prompts_dir` | Folder with the `<agent>_config.yaml` files whose system prompts are given to the judge. Used with `agent_evaluation_source: conversation` |
 | `evaluate_agents` | `false` skips the agent evaluation and saves judge calls |
 
 ### Cost and limits
 
 - Every run calls the models, and every Foundry evaluation run calls the judge model. One prompt costs one workflow run plus up to five evaluation runs for the team (final answer and four specialists), or one agent run plus two evaluation runs for the single agent. Start with one or two test cases.
 - The default judge is the `gpt-5.6-luna` deployment, the model that also writes the final answer in both set-ups. Point `judge_model_secret` at another deployment to avoid a model judging its own text.
-- **The judge gets the agent's system prompt.** The prompts live server-side and are not part of the conversation, so `EvaluateService` reads them from `agents/<agent>_config.yaml` and adds them as the system message when an agent's own work is scored (`evaluate_agents`, and the agent evaluation of the single agent). Without it the judge knows only the instruction the agent received and fails the agent for everything the instruction asked for and the agent's rules do not require, for example a hotel price that the search did not return. The judge is only accurate when the deployed agents use the same prompts as the local files. The final answer is scored without a system prompt, the same way for the workflow and for the single agent. The report lists the agents judged this way in `agents_judged_with_prompt`.
-- The judge sees an agent's function tool calls and their results, but not the calls of tools that run server-side (knowledge base, web search): the evaluated conversation holds only the agent's text. `task_adherence` then fails the agent for claims it cannot verify, so it is excluded for `ragDataAgent`, `webDataAgent` and `travelAgent` in `agent_evaluator_exclusions`.
-- Foundry documents limited support of the tool evaluators for web search calls.
+- **Agents with local function tools.** One turn of `weatherAgent`, `hotelAgent` or `travelAgent` is a chain of stored responses: the function call, then the reply written after the tool result. The script sends the id of the last response of the turn. Whether the judge also sees the function call from the earlier response depends on how Foundry follows the chain.
+- **Web search.** Foundry documents limited support of the tool evaluators for web search calls, so `tool_call_accuracy` is excluded for `webDataAgent`. A web search result holds the query and the source addresses, not the page contents.
+- **The agent's system prompt** is not sent with `agent_evaluation_source: responses`: the judge gets what Foundry stored with the response. With `conversation` the script adds the prompt from the local file, and the report lists the agents judged that way in `agents_judged_with_prompt`; the judge is then only accurate when the deployed agents use the same prompts as the local files.
+- The report records the source in `agent_evaluation_source`. Scores from the two sources are not directly comparable.
 
 ---
 

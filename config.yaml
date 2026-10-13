@@ -44,7 +44,7 @@ evaluation:
   # Word limit of the final answer, as set in the system prompt of the manager / of the single agent
   max_answer_words:
     magentic: 500
-    single_agent: 1000
+    single_agent: 500
   # Foundry built-in evaluators for the final answer
   final_answer_evaluators:
     - task_completion
@@ -58,13 +58,21 @@ evaluation:
     - task_adherence
     - relevance
     - tool_call_accuracy
-  # Folder with the <agent>_config.yaml files. When an agent's own work is scored, the judge gets
-  # the agent's system prompt from there, so the agent is judged against its own rules.
+  # Where the judge gets an agent's work from when the agent itself is scored:
+  #   responses    - Foundry reads the agent's responses stored in the project. The judge sees the calls
+  #                  and results of all tools, the server-side ones included (knowledge base, web search).
+  #   conversation - the script sends the conversation. The judge sees function tools only and gets the
+  #                  agent's system prompt from agent_prompts_dir.
+  agent_evaluation_source: "responses"
+  # Folder with the <agent>_config.yaml files, subfolders included (agent_evaluation_source: conversation)
   agent_prompts_dir: "agents"
-  # Evaluators skipped for individual agents. The judge sees an agent's function tool calls, but not
-  # the calls of tools that run server-side (knowledge base, web search). task_adherence then fails
-  # the agent for claims it cannot verify, whatever the quality of the answer.
+  # Evaluators skipped for individual agents, per agent_evaluation_source
   agent_evaluator_exclusions:
-    ragDataAgent: [task_adherence]
-    webDataAgent: [task_adherence]
-    travelAgent: [task_adherence]
+    responses:
+      # Foundry documents limited support of the tool evaluators for web search calls
+      webDataAgent: [tool_call_accuracy]
+    conversation:
+      # The judge does not see server-side tool calls and fails the agent for claims it cannot verify
+      ragDataAgent: [task_adherence]
+      webDataAgent: [task_adherence]
+      travelAgent: [task_adherence]
