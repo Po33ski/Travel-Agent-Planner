@@ -11,7 +11,7 @@
 #   unexpected_agents  - agents that must not be called (workflow only)
 #   expected_tools     - tools that must be called (single agent only)
 #   unexpected_tools   - tools that must not be called (single agent only)
-# Tool names: get_forecast_weather, search_for_hotels, knowledge_base_retrieve, web_search. The last
+# Tool names: get_forecast_weather, search_hotels_google_maps, knowledge_base_retrieve, web_search. The last
 # two run server-side and are seen only when the service reports their calls, so they are listed
 # only under unexpected_tools.
 # Optional switch:
@@ -26,7 +26,7 @@ test_cases:
     query: "I'm going to Lisbon for 3 days next week on a medium budget. I like food and museums. Can you plan my trip and suggest a few hotels near the city centre?"
     expected_keywords: ["Lisbon"]
     expected_agents: [ragDataAgent, weatherAgent, hotelAgent]
-    expected_tools: [get_forecast_weather, search_for_hotels]
+    expected_tools: [get_forecast_weather, search_hotels_google_maps]
 
   # Destination information only: hotels were not requested, so the hotel agent must stay idle
   - id: rome_attractions_no_hotels
@@ -35,7 +35,7 @@ test_cases:
     expected_agents: [ragDataAgent, weatherAgent]
     unexpected_agents: [hotelAgent]
     expected_tools: [get_forecast_weather]
-    unexpected_tools: [search_for_hotels]
+    unexpected_tools: [search_hotels_google_maps]
 
   # Weather question
   - id: tokyo_weather
@@ -44,14 +44,14 @@ test_cases:
     expected_agents: [weatherAgent]
     unexpected_agents: [hotelAgent]
     expected_tools: [get_forecast_weather]
-    unexpected_tools: [search_for_hotels]
+    unexpected_tools: [search_hotels_google_maps]
 
   # Request in Polish: the answer has to be in the user's language
   - id: krakow_hotels_polish
     query: "Szukam hotelu w Krakowie na najbliższy weekend dla dwóch osób. Co polecacie?"
     expected_keywords: ["Krak"]
     expected_agents: [weatherAgent, hotelAgent]
-    expected_tools: [get_forecast_weather, search_for_hotels]
+    expected_tools: [get_forecast_weather, search_hotels_google_maps]
 
   # Country information only (entry rules): web search is the only agent to ask
   - id: japan_visa_web_only
@@ -59,7 +59,7 @@ test_cases:
     expected_keywords: ["visa"]
     expected_agents: [webDataAgent]
     unexpected_agents: [ragDataAgent, weatherAgent, hotelAgent]
-    unexpected_tools: [knowledge_base_retrieve, get_forecast_weather, search_for_hotels]
+    unexpected_tools: [knowledge_base_retrieve, get_forecast_weather, search_hotels_google_maps]
 
   # Out of scope: the manager must refuse without delegating, the single agent without calling a tool
   - id: out_of_scope
@@ -67,4 +67,4 @@ test_cases:
     expected_answer: "I'm sorry, I can't help with that. I am only a travel-planning assistant."
     judge_final_answer: false
     unexpected_agents: [ragDataAgent, webDataAgent, weatherAgent, hotelAgent]
-    unexpected_tools: [knowledge_base_retrieve, web_search, get_forecast_weather, search_for_hotels]
+    unexpected_tools: [knowledge_base_retrieve, web_search, get_forecast_weather, search_hotels_google_maps]

@@ -6,7 +6,7 @@ from agent_framework.foundry import FoundryAgent, FoundryChatClient
 from azure.keyvault.secrets import SecretClient
 import yaml
 from classes.weather_services import get_forecast_weather
-from classes.hotel_services import search_for_hotels
+from classes.google_services import search_hotels_google_maps
 from classes.secret_manager_services import SecretManager
 from classes.evaluate_services import EvaluateService
 from utils.agent_middleware import BlockedReplyMonitor, log_tool_calls
@@ -64,7 +64,7 @@ def create_agent(usage_middleware):
         project_endpoint=endpoint,
         agent_name=AGENT_NAME,
         credential=credential,
-        tools=[get_forecast_weather, search_for_hotels],
+        tools=[get_forecast_weather, search_hotels_google_maps],
         middleware=[usage_middleware, blocked_reply_monitor, log_tool_calls],
     )
     return agent

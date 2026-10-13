@@ -11,7 +11,7 @@ from azure.cosmos import CosmosClient
 from azure.ai.textanalytics import TextAnalyticsClient
 import yaml
 from classes.weather_services import get_forecast_weather
-from classes.hotel_services import search_for_hotels
+from classes.google_services import search_hotels_google_maps
 from classes.speech_services import text_to_speech
 from classes.secret_manager_services import SecretManager
 from classes.cosmos_memory_services import CosmosMemory
@@ -135,9 +135,10 @@ def create_agents():
     hotel_agent = FoundryAgent(
         project_endpoint=endpoint,
         agent_name="hotelAgent",
-        description="Searches booking sites for hotels in a city: prices, ratings and booking links.",
+        description="Searches Google Maps for hotels in a city and picks the ones that best match the user's "
+        "preferences: ratings, reviews, amenities and links. It has no room prices.",
         credential=credential,
-        tools=[search_for_hotels],
+        tools=[search_hotels_google_maps],
         middleware=[drop_foreign_tool_contents, blocked_reply_monitor, log_agent_replies, log_tool_calls],
     )
 

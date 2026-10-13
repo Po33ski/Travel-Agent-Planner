@@ -76,11 +76,13 @@ def create_or_update_agent(
 
     print(f"🔄 Processing agent: {agent_name}")
 
-    # Parameters must match search_for_hotels in classes/hotel_services.py
+    # Parameters must match search_hotels_google_maps in classes/google_services.py
     hotel_search_tool = FunctionTool(
-        name="search_for_hotels",
-        description="Search booking sites (booking.com, hotels.com, tripadvisor.com) for hotels in a given city "
-        "and optional date range. Returns raw search results with prices in a single target currency.",
+        name="search_hotels_google_maps",
+        description="Search Google Maps for hotels in a given city, optionally matching the user's preferences. "
+        "Returns up to 20 hotels with structured data: name, type, address, rating, number of reviews, "
+        "price level, summary, guest reviews, amenities, website and Google Maps link. "
+        "It has no room prices and no availability for travel dates.",
         parameters={
                 "type": "object",
                 "properties": {
@@ -88,18 +90,15 @@ def create_or_update_agent(
                         "type": "string",
                         "description": "The city in which to search for hotels.",
                     },
-                    "check_in": {
+                    "preferences": {
                         "type": "string",
-                        "description": "Check-in date in YYYY-MM-DD format (optional).",
-                    },
-                    "check_out": {
-                        "type": "string",
-                        "description": "Check-out date in YYYY-MM-DD format (optional). Use only with check_in.",
+                        "description": "What the user is looking for, as a few keywords in the user's language, "
+                        "e.g. 'quiet, spa, near the Old Town' (optional).",
                     },
                     "language": {
                         "type": "string",
                         "description": "ISO 639-1 language code of the conversation, e.g. 'pl' or 'en'. "
-                        "'pl' returns prices in PLN, any other language in USD.",
+                        "The results are returned in this language.",
                     },
                 },
                 "required": ["city"],

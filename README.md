@@ -7,14 +7,13 @@ An AI assistant that helps you plan a trip to a chosen destination anywhere in t
 - a knowledge base agent that uses **Foundry IQ** as a RAG knowledge base: a travel guide covering 182 cities in Europe, Asia and the Americas, indexed with Azure AI Search
 - a web search agent, used for general country information such as visa requirements, and as a fallback for anything the knowledge base does not cover, such as current events
 - a weather agent that fetches **weather data** from the Visual Crossing API
-- a hotel agent that **searches for hotels** on booking sites through the Tavily Search API
+- a hotel agent that **searches for hotels** on Google Maps through the Places API and picks the ones that best match what the user is looking for
 
 The team uses **two LLMs**: `gpt-5.6-luna` for the manager, which does the planning and writes the final answer, and `gpt-5-mini` for the four specialist agents.
 
-A typical answer includes a weather summary for the travel dates, a day-by-day plan based on the travel guide, hotel suggestions with prices and booking links (when the user asks about accommodation), and transport and practical tips. The final answer is also read out with **Azure AI Speech** and saved as an audio file.
+A typical answer includes a weather summary for the travel dates, a day-by-day plan based on the travel guide, hotel suggestions with ratings, the reasons why they match the user's preferences and links (when the user asks about accommodation), and transport and practical tips. The final answer is also read out with **Azure AI Speech** and saved as an audio file.
 
 Every user signs in with a name. Their profile, preferences and conversation history (in a chat fine-tuning format) are kept in **Azure Cosmos DB**, and **Azure AI Language** detects the language of each question and stores it as a preference. All endpoints, resource names and keys live in **Azure Key Vault**, so the only setting a script needs is the Key Vault URL.
-
 ![Travel Agent Planner architecture](docs/architecture.svg)
 
 ## Table of contents
@@ -50,7 +49,8 @@ Every user signs in with a name. Their profile, preferences and conversation his
 | `classes/azure_nlp_services.py` | `AzureNLPService`: language detection and other Azure AI Language features |
 | `classes/foundry_iq_services.py` | `FoundryIQService`: blob upload, knowledge source, ingestion, knowledge base, MCP tool |
 | `classes/weather_services.py` | `WeatherService` and the `get_forecast_weather` / `get_current_weather` tools |
-| `classes/hotel_services.py` | `HotelService` (Tavily client) and the `search_for_hotels` tool |
+| `classes/google_services.py` | `GooglePlacesService` (Google Maps Places API) and the `search_hotels_google_maps` tool |
+| `classes/hotel_services.py` | `HotelService` (Tavily client) and the `search_for_hotels` tool. The earlier hotel search: no agent uses it in this version |
 | `classes/speech_services.py` | `AzureSpeechService` and the `text_to_speech` helper |
 | `classes/rai_policies_services.py` | `RaiPolicyManager`: builds and deploys the RAI policy from `config.yaml` |
 | `utils/utils.py` | Helpers for normalising weather API responses |
@@ -70,7 +70,8 @@ Every user signs in with a name. Their profile, preferences and conversation his
 - [Azure CLI](https://aka.ms/installazurecli) with Bicep
 - An Azure subscription where you can create resource groups and role assignments (for example, Owner)
 - A [Visual Crossing](https://www.visualcrossing.com/weather-api) API key for weather data
-- A [Tavily](https://tavily.com) API key for hotel search
+- A [Google Maps Platform](https://console.cloud.google.com/google/maps-apis/start) API key with **Places API (New)** enabled, for hotel search (see [Hotel search tool](#hotel-search-tool-classesgoogle_servicespy))
+- A [Tavily](https://tavily.com) API key. No agent uses it in this version, but the template still requires it and stores it in Key Vault
 
 The template uses free tiers, and Azure allows **one of each per subscription**: a free (F0) Speech resource, a free (F0) Language resource, a free Azure AI Search service and a Cosmos DB account with the free tier. If one of them already exists, or a Speech or Language resource is still soft-deleted, the deployment fails (for example with `CanNotCreateMultipleFreeAccounts`). See [Clean-up](#clean-up) for how to purge soft-deleted resources.
 
@@ -94,10 +95,11 @@ az bicep upgrade
 
 ### 3. Add the third-party API keys to `.env`
 
-Create a `.env` file in the repository root. It is listed in `.gitignore`, so **never commit it**. It holds only the two keys that do not come from Azure:
+Create a `.env` file in the repository root. It is listed in `.gitignore`, so **never commit it**. It holds only the three keys that do not come from Azure:
 
 ```dotenv
 VISUAL_CROSSING_API_KEY="<your Visual Crossing key>"
+GOOGLE_API_KEY="<your Google Maps Platform key>"
 TAVILY_API_KEY="<your Tavily key>"
 ```
 
@@ -123,6 +125,7 @@ az deployment group create `
   --parameters projectPrefix="<prefix>" `
     userPrincipalId="$(az ad signed-in-user show --query id -o tsv)" `
     visualCrossingApiKey="$env:VISUAL_CROSSING_API_KEY" `
+    googleApiKey="$env:GOOGLE_API_KEY" `
     tavilyApiKey="$env:TAVILY_API_KEY"
 
 # The only output is KEY_VAULT_URL
@@ -217,8 +220,10 @@ I'm going to Lisbon from 2026-10-12 to 2026-10-15 on a medium budget. I like foo
 Example prompt with hotel search:
 
 ```text
-I'm going to Lisbon from 2026-10-12 to 2026-10-15. Can you plan my trip and suggest a few hotels near the city centre?
+I'm going to Lisbon from 2026-10-12 to 2026-10-15. Can you plan my trip and suggest a few quiet hotels near the city centre?
 ```
+
+Describe the hotel you want (location, style, amenities, who travels): the hotel agent passes the description to the search and picks the hotels that match it best. The search has no room prices and no availability for the travel dates, so the answer points you to the hotel's website for them.
 
 ### 9. Evaluate the agents
 
@@ -256,7 +261,8 @@ To use another region, change `--location` in `az group create`. Existing resour
 | `projectPrefix` | *(required)* | Base name for all resources |
 | `userPrincipalId` | *(required)* | Object ID of the user who runs the scripts (`az ad signed-in-user show --query id -o tsv`) |
 | `visualCrossingApiKey` | *(required, secure)* | Visual Crossing API key, stored in Key Vault |
-| `tavilyApiKey` | *(required, secure)* | Tavily API key, stored in Key Vault |
+| `googleApiKey` | *(required, secure)* | Google Maps Platform API key, stored in Key Vault |
+| `tavilyApiKey` | *(required, secure)* | Tavily API key, stored in Key Vault. No agent uses it in this version |
 | `aiFoundryName` | `projectPrefix` | Foundry (AIServices) account name and custom subdomain |
 | `aiProjectName` | `<aiFoundryName>-proj` | Foundry project name |
 | `llmModelDeploymentName` | `<prefix>-llm-deploy` | `gpt-5.6-luna` deployment, used by the manager agent |
@@ -296,7 +302,7 @@ To use another region, change `--location` in `az group create`. Existing resour
 
 ### Key Vault secrets
 
-The template writes **25 secrets**. A secret name is the setting name with `-` instead of `_`, because Key Vault names can't contain underscores (for example `PROJECT_ENDPOINT` → `PROJECT-ENDPOINT`). Keys are read from the resources during the deployment (`listKeys()`), so they never appear in code, outputs or the deployment history.
+The template writes **27 secrets**. A secret name is the setting name with `-` instead of `_`, because Key Vault names can't contain underscores (for example `PROJECT_ENDPOINT` → `PROJECT-ENDPOINT`). Keys are read from the resources during the deployment (`listKeys()`), so they never appear in code, outputs or the deployment history.
 
 | Group | Secrets | Read by |
 |---|---|---|
@@ -312,7 +318,8 @@ The template writes **25 secrets**. A secret name is the setting name with `-` i
 | Speech | `SPEECH-KEY`, `SPEECH-REGION` | `speech_services.py` |
 | Language | `LANGUAGE-ENDPOINT`, `LANGUAGE-KEY` | `agent_execution.py` |
 | Cosmos DB | `COSMOSDB-ENDPOINT`, `COSMOSDB-DATABASE-NAME`, `COSMOSDB-CONTAINER-NAME`, `COSMOSDB-PRIMARY-KEY` | `agent_execution.py` |
-| Third-party APIs | `VISUAL-CROSSING-API-KEY`, `TAVILY-API-KEY` | `weather_services.py`, `hotel_services.py` |
+| Third-party APIs | `VISUAL-CROSSING-API-KEY`, `GOOGLE-API-KEY` | `weather_services.py`, `google_services.py` |
+| | `TAVILY-API-KEY` | `hotel_services.py`, which no agent uses in this version |
 
 Each script creates a `SecretClient` with `DefaultAzureCredential` and wraps it in `SecretManager`, which caches every secret in memory for the lifetime of the process.
 
@@ -325,10 +332,10 @@ The project uses a hybrid approach:
   - `Storage Blob Data Contributor` on the storage account (upload documents)
   - `Search Service Contributor` on the search service (create knowledge sources and knowledge bases)
   - `Search Index Data Contributor` on the search service (read index content and status)
-- **User → Azure (keys from Key Vault).** The local client calls Speech, Language and Cosmos DB with keys that it reads from Key Vault. The weather and hotel tools read the Visual Crossing and Tavily keys the same way.
+- **User → Azure (keys from Key Vault).** The local client calls Speech, Language and Cosmos DB with keys that it reads from Key Vault. The weather and hotel tools read the Visual Crossing and Google Maps keys the same way.
 - **Service → service (keys).** AI Search reads Storage with the account connection string and calls the models with the Foundry API key. The knowledge base agent queries the knowledge base with the Search query key stored in the project connection.
 
-Even though most services are called with keys, Key Vault itself is always opened with Entra ID, so no secret is stored on disk except the two third-party keys in `.env`, which are only needed for the deployment.
+Even though most services are called with keys, Key Vault itself is always opened with Entra ID, so no secret is stored on disk except the three third-party keys in `.env`, which are only needed for the deployment.
 
 Role assignments for a fully managed-identity setup (Search → Storage, Search → Foundry, project → Search) are included in the template but commented out. The free Search tier does not support managed identities.
 
@@ -348,7 +355,7 @@ All five agents are **prompt agents** (`PromptAgentDefinition`) hosted in Azure 
 | `ragDataAgent` | `gpt-5-mini` | `knowledge_base_retrieve` | Attractions, restaurants, events, transport and practical tips from the travel guide. First choice for destination information |
 | `webDataAgent` | `gpt-5-mini` | `web_search` | General country information such as entry and visa rules, and fallback for information the knowledge base did not return |
 | `weatherAgent` | `gpt-5-mini` | `get_forecast_weather` | Daily weather forecast for the destination and dates |
-| `hotelAgent` | `gpt-5-mini` | `search_for_hotels` | Hotel offers with prices, ratings and booking links |
+| `hotelAgent` | `gpt-5-mini` | `search_hotels_google_maps` | The hotels that best match the user's preferences, with ratings, reasons and links |
 
 ### Deployment (`agents/<agent>_deployment.py`)
 
@@ -392,7 +399,7 @@ Details worth knowing:
 - **Scope.** A request that is not directly about travel or trip planning goes to no agent: the manager marks it as satisfied in the first progress check and replies exactly *"I'm sorry, I can't help with that. I am only a travel-planning assistant."*
 - **Country information only.** A request for general information about a country or for entry rules such as visas, with no trip to plan, goes to `webDataAgent` alone. The other three agents are not asked.
 - **Delegation order for a trip.** Destination information goes to `ragDataAgent` first, and to `webDataAgent` only for what the knowledge base did not return. Weather is mandatory whenever the request names a city or place to visit, also without dates and when the user asks only about attractions, food or hotels. Hotels are searched only when the user asks about accommodation.
-- **Asking an agent again.** Allowed in two cases only: several cities (one instruction per city), and a wrong or weak reply (one more attempt, with an instruction that says what was wrong). Otherwise an agent that has already replied for a city, with data, "not found" or an error, is not asked again. `hotelAgent` is asked once per city and dates, for 2 or 3 hotels where only the name is required: missing prices or links are not a reason to ask again.
+- **Asking an agent again.** Allowed in two cases only: several cities (one instruction per city), and a wrong or weak reply (one more attempt, with an instruction that says what was wrong). Otherwise an agent that has already replied for a city, with data, "not found" or an error, is not asked again. `hotelAgent` is asked once per city, with everything the user said about the hotel they want, for 2 or 3 hotels where only the name is required: missing ratings or links are not a reason to ask again. The manager never asks for prices per night or availability, because the hotel search does not have them.
 - **Finishing.** As soon as every needed agent has replied, the manager marks the request as satisfied in the progress check and writes the final answer, naming anything still missing. It never picks an agent a third time for the same city.
 - **No questions to the user.** The user cannot be asked during a task, so the manager uses sensible defaults and states its assumptions in the answer.
 - **Accuracy first.** The final answer uses only facts reported by the team, keeps prices, currencies and links exactly as the agents returned them, and adds no citation markers. If the team found nothing at all, the reply is exactly: *"I'm sorry, I don't have that information."* If only a part is missing, the manager gives what was found and says which part could not be found.
@@ -403,7 +410,7 @@ Details worth knowing:
 - **`ragDataAgent`** always calls `knowledge_base_retrieve`, uses only passages about the requested destination and starts its reply with *"From the knowledge base:"*. It adds no citation markers: the knowledge base returns passages without them, so a marker such as `【6:0†source】` would be invented. It ends with a *"Not found in the knowledge base:"* line, so the manager knows what to send to web search.
 - **`webDataAgent`** searches for travel information missing from the knowledge base and for general information about any country (entry and visa rules, currency, language, safety, customs, public holidays). It searches only for the items it was asked about, prefers official sources and gives each finding with its source. It does not search for weather or hotels.
 - **`weatherAgent`** reports max/min temperature, precipitation probability, wind speed and conditions for each day, and bases packing tips on the actual data.
-- **`hotelAgent`** recommends 2 or 3 hotels, preferring single-hotel pages. Only the hotel name is required; price per night, rating, highlights and the booking link are added when the results contain them. The travel dates are always passed when they are known. It judges the results itself, ignores pages that are not about a specific hotel and never repeats an identical search, because the same city, dates and language return the same results. A hotel gets a link only when it is the page of that hotel. After the hotels the agent adds one general link to a booking.com page for the city, which already carries the travel dates. Prices are shown only in the currency returned by the tool (PLN or USD), never converted. A missing price is reported as *"price not available"*.
+- **`hotelAgent`** passes the user's hotel preferences to the search as a few keywords, gets up to 20 hotels back and recommends the 2 or 3 that match best, the best match first. It compares each hotel with the preferences using its type, address, summary, guest reviews, rating and amenities, and prefers a hotel whose data confirms a preference over one that is only highly rated. Without preferences it picks well-rated hotels with many reviews. Only the hotel name is required; for each hotel the agent says why it matches and adds the rating, the price category and the links when the results contain them. A missing field means the search has no such data, not "no", and a preference that the results cannot confirm is named instead of guessed. The agent never states a price per night and ends with one line saying that room prices and availability have to be checked on the hotel's website. It never repeats an identical search, because the same city, preferences and language return the same results.
 
 ---
 
@@ -414,7 +421,7 @@ Details worth knowing:
 | `knowledge_base_retrieve` | `ragDataAgent` | MCP (Foundry IQ) | Server-side | RAG retrieval from the travel guide |
 | `web_search` | `webDataAgent` | Built-in `WebSearchTool` | Server-side | General country information, and fallback for information missing from the knowledge base |
 | `get_forecast_weather` | `weatherAgent` | `FunctionTool` | Locally, in `agent_execution.py` | Daily forecast for a location and date range |
-| `search_for_hotels` | `hotelAgent` | `FunctionTool` | Locally, in `agent_execution.py` | Hotel search on booking sites via Tavily |
+| `search_hotels_google_maps` | `hotelAgent` | `FunctionTool` | Locally, in `agent_execution.py` | Hotel search on Google Maps via the Places API |
 
 ### Foundry IQ knowledge base (`knowledge_base_retrieve`)
 
@@ -442,49 +449,64 @@ Sunrise and sunset times are shortened to `HH:MM` (`utils/utils.py`). Errors nev
 
 The module also contains `get_current_weather(location)`. It is not attached to any agent in this version.
 
-### Hotel search tool (`classes/hotel_services.py`)
+### Hotel search tool (`classes/google_services.py`)
 
-Hotel search uses the [Tavily Search API](https://docs.tavily.com) (`tavily-python`). The API key comes from the `TAVILY-API-KEY` secret. `HotelService` creates a `TavilyClient` in its constructor, and its `search_hotels()` method runs the search. The `search_for_hotels` tool is a thin wrapper that reads the API key, creates the service and returns its result.
+Hotel search uses **Text Search** of the [Google Maps Places API (New)](https://developers.google.com/maps/documentation/places/web-service/text-search). The API key comes from the `GOOGLE-API-KEY` secret. `GooglePlacesService` takes the key in its constructor, and its `search_hotels()` method runs the search. The `search_hotels_google_maps` tool is a thin wrapper that reads the API key, creates the service and returns its result.
 
-**`search_for_hotels(city, check_in=None, check_out=None, language="en")`**
+**Getting the key.** In the [Google Cloud console](https://console.cloud.google.com/google/maps-apis/start), create a project with a billing account, enable **Places API (New)** and create an API key under *Keys & Credentials*. Restrict the key to Places API (New). You do not get an endpoint of your own: every caller uses `https://places.googleapis.com/v1/places:searchText`, and the key identifies the caller.
+
+**`search_hotels_google_maps(city, preferences=None, language="en")`**
 
 | Parameter | Required | Description |
 |---|---|---|
 | `city` | Yes | City to search for hotels in |
-| `check_in` | No | Check-in date, `YYYY-MM-DD`. Added to the booking.com links, not to the search text |
-| `check_out` | No | Check-out date, `YYYY-MM-DD`. Use only with `check_in` |
-| `language` | No | ISO 639-1 code of the conversation language. `pl` returns prices in PLN, any other value in USD |
+| `preferences` | No | What the user is looking for, as a few keywords in the user's language, for example `quiet, spa, near the Old Town` |
+| `language` | No | ISO 639-1 code of the conversation language. Google returns names, summaries and reviews in this language |
 
 How it works:
 
-1. **Target currency.** `language` decides the single currency used for the whole search: `pl` → PLN, anything else → USD.
-2. **Query.** The query is short and in the matching language: `hotele Kraków` for PLN, `hotels in Lisbon` for USD. Tavily searches indexed web pages, not live availability, so dates and words such as "price per night" or "booking" do not filter offers; in the query they pulled in cruises, flights and forum topics.
-3. **Search.** Tavily runs an `advanced` search limited to `booking.com`, `hotels.com` and `tripadvisor.com`, with up to 8 results and a country filter matching the currency (Poland or United States).
-4. **Post-processing.**
-   - booking.com links get `selected_currency` and `lang` query parameters, and `checkin` / `checkout` when the dates are known, so the booking page opens in the target currency with the offers for the requested stay.
-   - Each result is marked `is_direct: true` when its URL points at a single hotel's page (`/hotel/...`, excluding `/reviews/` pages). Direct pages are sorted first, because they are more useful than city or category overview pages.
+1. **Query.** The query is short and in the language of the conversation, with the preferences appended: `hotele Kraków, cichy, spa, blisko Starego Miasta` for `pl`, `hotels in Lisbon, quiet, near the city centre` for any other language. Google ranks the results by how well they match this text, so the preferences already shape the list the agent chooses from.
+2. **Search.** One `POST` request with a 10 s timeout, the language code and up to 20 results, which is the most the API returns in one page.
+3. **Field mask.** The `X-Goog-FieldMask` header (`FIELD_MASK`) is required and lists the fields to return. Google bills a request by its most expensive field: the summary, the reviews and the amenity fields make every call a *Text Search Enterprise + Atmosphere* request. Google's [price list](https://developers.google.com/maps/billing-and-pricing/pricing) gives every SKU a free monthly allowance; for this one it was 1,000 requests when this was written.
+4. **Fallback.** When a search with preferences returns nothing, the tool searches once more without them and adds a `note` to the result, so the agent can say that the hotels are general results for the city. This is a second billed request.
+5. **Post-processing.** Each place is reduced to the fields the agent needs to compare it with the preferences. At most 3 reviews per hotel are kept (`MAX_REVIEWS`), each cut to 300 characters (`MAX_REVIEW_CHARS`), because reviews are the largest part of the response. A field that Google does not return is left out of the result.
 
 Example result:
 
 ```json
 {
   "city": "Kraków",
-  "check_in": "2026-10-10",
-  "check_out": "2026-10-12",
-  "target_currency": "PLN",
-  "results": [
+  "preferences": "cichy, spa, blisko Starego Miasta",
+  "hotels": [
     {
-      "url": "https://www.booking.com/hotel/pl/...html?selected_currency=PLN&lang=pl&checkin=2026-10-10&checkout=2026-10-12",
-      "title": "...",
-      "content": "...",
-      "score": 0.87,
-      "is_direct": true
+      "name": "...",
+      "type": "Hotel",
+      "address": "..., Kraków, Polska",
+      "rating": 4.5,
+      "reviews_count": 1039,
+      "summary": "...",
+      "reviews": [
+        { "rating": 5, "text": "..." }
+      ],
+      "good_for_children": true,
+      "parking": ["paidGarageParking"],
+      "website": "https://...",
+      "google_maps_url": "https://maps.google.com/?cid=..."
     }
   ]
 }
 ```
 
-The tool returns raw page snippets (`title`, `content`), not structured hotel data. `hotelAgent` extracts the hotel name, price, rating and highlights from them, following the hotel reporting rules in its system prompt. As with the weather tool, errors never raise exceptions. A missing city, a key that can't be read, no results or a failed Tavily call come back as `{"error": "..."}`.
+A hotel can also have `price_level` and `allows_dogs`.
+
+What the search does not have:
+
+- **Room prices and availability.** The Places API knows neither, and the tool takes no travel dates. `price_level` is only a general category (`inexpensive`, `moderate`, `expensive`, `very_expensive`) and is often missing for hotels, so a budget cannot be matched reliably.
+- **Complete amenity data.** `allows_dogs` and `parking` are returned for only some hotels. The summary and the reviews are the fields the agent can usually rely on.
+
+As with the weather tool, errors never raise exceptions. A missing city, a key that can't be read, no results or a failed call come back as `{"error": "..."}`. For a failed call the message includes Google's explanation, for example an invalid key or a project where Places API (New) is not enabled.
+
+**Earlier hotel search.** `classes/hotel_services.py` still holds the previous implementation: `search_for_hotels`, which searched booking.com, hotels.com and tripadvisor.com through the [Tavily Search API](https://docs.tavily.com) and returned raw page snippets. No agent uses it in this version. The template still creates its `TAVILY-API-KEY` secret.
 
 ### Text-to-speech (`classes/speech_services.py`)
 
@@ -494,7 +516,7 @@ Speech is not an agent tool. `agent_execution.py` calls `text_to_speech(text, vo
 
 Two things are defined in more than one place:
 
-- **Function tool schemas.** `agents/weather_agent_deployment.py` and `agents/hotel_agent_deployment.py` hold the `FunctionTool` JSON schemas for the server-side agents, and `weather_services.py` / `hotel_services.py` hold the `@tool` Python implementations for the client. Keep the tool and parameter names in sync.
+- **Function tool schemas.** `agents/weather_agent_deployment.py` and `agents/hotel_agent_deployment.py` hold the `FunctionTool` JSON schemas for the server-side agents (`agents/single_agent/travel_agent_deployment.py` holds both for the single agent), and `weather_services.py` / `google_services.py` hold the `@tool` Python implementations for the client. Keep the tool and parameter names in sync.
 - **Agent names.** The `agent_name` in each `agents/<agent>_config.yaml` must match the name used in `agent_execution.py` and in the *Team* section of the manager's system prompt.
 
 ---
@@ -573,7 +595,7 @@ Each test case has an `id` and a `query`. Optional fields add rule checks:
 | `expected_agents` | Agents that must be called. Workflow only |
 | `unexpected_agents` | Agents that must not be called, for example `hotelAgent` when hotels were not requested. Workflow only |
 | `expected_tools` | Tools that must be called. Single agent only |
-| `unexpected_tools` | Tools that must not be called, for example `search_for_hotels` when hotels were not requested. Single agent only |
+| `unexpected_tools` | Tools that must not be called, for example `search_hotels_google_maps` when hotels were not requested. Single agent only |
 | `judge_final_answer` | `false` skips the LLM judge for the final answer. Used for the out-of-scope request: the judge does not know the assistant's scope and scores the correct refusal as a failed task. The rule checks still apply |
 
 The six prompts cover a full trip plan, destination information without hotels, a weather question, a request in Polish, a visa question that only web search may answer and an out-of-scope request. Dates are relative ("next week"), so the weather forecast stays available.
@@ -602,7 +624,7 @@ Each script writes `outputs/evaluation_<name>_<timestamp>.json`, where the name 
 - `summary`: number of runs and failed runs, average duration, passed / failed counts and average score per metric (final answer, rule checks, each agent), and tokens in total, on average per run and per agent.
 - `cases`: one record per run with the query, the final answer, the duration, the token usage, the rule checks and the scores with the judge's explanations.
 
-The single agent's records also hold `called_tools`: the tools found in the agent's response and how often each was called. Function tools (`get_forecast_weather`, `search_for_hotels`) are always there. The server-side tools (`knowledge_base_retrieve`, `web_search`) appear only when the service reports their calls, so the test prompts list them only under `unexpected_tools`.
+The single agent's records also hold `called_tools`: the tools found in the agent's response and how often each was called. Function tools (`get_forecast_weather`, `search_hotels_google_maps`) are always there. The server-side tools (`knowledge_base_retrieve`, `web_search`) appear only when the service reports their calls, so the test prompts list them only under `unexpected_tools`.
 
 The two reports have the same format. Compare the metrics in `summary.final_answer`, `summary.rule_checks` and `summary.tokens`.
 

@@ -25,11 +25,15 @@ param speechName string = '${projectPrefix}-speech'
 param cosmosDbAccountName string = '${projectPrefix}-cosmos'
 param databaseName string = '${projectPrefix}-cosmosdb'
 param containerName string = '${projectPrefix}-container'
-// Third-party API keys: scripts/01_resource_deployment.sh passes them from .env (VISUAL_CROSSING_API_KEY, TAVILY_API_KEY).
+// Third-party API keys: scripts/01_resource_deployment.sh passes them from .env
+// (VISUAL_CROSSING_API_KEY, GOOGLE_API_KEY, TAVILY_API_KEY).
 // Required: the deployment fails when a value is missing or empty.
 @secure()
 @minLength(1)
 param visualCrossingApiKey string
+@secure()
+@minLength(1)
+param googleApiKey string
 @secure()
 @minLength(1)
 param tavilyApiKey string
@@ -569,6 +573,15 @@ resource visualCrossingApiKeySecret 'Microsoft.KeyVault/vaults/secrets@2026-02-0
   name: 'VISUAL-CROSSING-API-KEY'
   properties: {
     value: visualCrossingApiKey
+    contentType: 'text/plain'
+  }
+}
+
+resource googleApiKeySecret 'Microsoft.KeyVault/vaults/secrets@2026-02-01' = {
+  parent: keyVault
+  name: 'GOOGLE-API-KEY'
+  properties: {
+    value: googleApiKey
     contentType: 'text/plain'
   }
 }
