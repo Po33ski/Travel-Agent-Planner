@@ -605,17 +605,13 @@ The six prompts cover a full trip plan, destination information without hotels, 
 | Evaluation | Workflow | Single agent | How |
 |---|---|---|---|
 | Final answer | `evaluate_final_answer` | `evaluate_agent_final_answer` | Foundry built-in evaluators with an LLM judge: `task_completion`, `intent_resolution`, `relevance`, `coherence` (`final_answer_evaluators` in `config.yaml`) |
-| Agents | `evaluate_agents`: every specialist separately | `evaluate_agent_work`: the agent's own work, tool use included | Foundry built-in evaluators: `task_adherence`, `relevance`, `tool_call_accuracy` (`agent_evaluators`), minus the evaluators excluded for the agent (`agent_evaluator_exclusions`). Foundry reads the agents' stored responses itself (`agent_evaluation_source`) |
+| Agents | `evaluate_agents`: every specialist separately | `evaluate_agent_work`: the agent's own work, tool use included | Foundry built-in evaluators: `relevance`, `tool_call_accuracy` (`agent_evaluators`). The tool evaluator is skipped for agents without function tools |
 | Rules | `check_final_answer` with the agents that were called | `check_final_answer` with the tools that were called (`count_tool_calls`) | Local checks without model calls: the word limit of the answer and the optional fields of the test case |
 | Tokens | `count_workflow_tokens` | `count_workflow_tokens` | Input, cached input, output, reasoning and total tokens and the number of calls, per agent and in total |
 
-The Foundry evaluators run in the Foundry project, not locally. The runs are also listed in the Foundry portal under **Evaluations**. What the judge receives depends on what is scored:
+The Foundry evaluators run in the Foundry project, not locally: the script uploads the conversation through the built-in `evaluate_workflow` (workflow) or `evaluate_agent` (single agent) with `FoundryEvals` and waits for the evaluation run. The runs are also listed in the Foundry portal under **Evaluations**.
 
-- **Final answer:** the script uploads the user's request and the final answer. This is the same for the workflow and for the single agent, so the two can be compared.
-- **Agents** (`agent_evaluation_source: responses`, the default): the script sends only the ids of the agents' responses. Every agent call is a response stored in the Foundry project; Foundry retrieves it with its input, its output and every tool call, so the judge also sees the calls and results of the server-side tools (knowledge base, web search).
-- **Agents** (`agent_evaluation_source: conversation`): the script uploads the conversation itself. The judge then sees function tools only, because the framework leaves the server-side tool calls out, and it gets the agent's system prompt from `agents/<agent>_config.yaml`. Kept as a fallback.
-
-**Token counting.** `TokenUsageMiddleware` is added to every `FoundryAgent`. After each agent call it reads `usage_details` from the response and adds it to the totals of that agent, and it records the response id that the agent evaluation sends to Foundry. The Magentic manager is called by the orchestrator and does not appear in the workflow events as an agent, so the middleware is the only place that sees its usage.
+**Token counting.** `TokenUsageMiddleware` is added to every `FoundryAgent`. After each agent call it reads `usage_details` from the response and adds it to the totals of that agent. The Magentic manager is called by the orchestrator and does not appear in the workflow events as an agent, so the middleware is the only place that sees its usage.
 
 ### Report
 
@@ -638,19 +634,13 @@ The two reports have the same format. Compare the metrics in `summary.final_answ
 | `timeout_seconds` | How long to wait for one Foundry evaluation run |
 | `max_answer_words` | Word limit of the final answer, as set in the system prompt of the manager (`magentic`) and of the single agent (`single_agent`) |
 | `final_answer_evaluators`, `agent_evaluators` | Foundry built-in evaluator names |
-| `agent_evaluation_source` | Where the judge gets an agent's work from: `responses` (Foundry reads the stored responses) or `conversation` (the script uploads the conversation) |
-| `agent_evaluator_exclusions` | Evaluators skipped for individual agents, by agent name, separately for each `agent_evaluation_source` |
-| `agent_prompts_dir` | Folder with the `<agent>_config.yaml` files whose system prompts are given to the judge. Used with `agent_evaluation_source: conversation` |
 | `evaluate_agents` | `false` skips the agent evaluation and saves judge calls |
 
 ### Cost and limits
 
 - Every run calls the models, and every Foundry evaluation run calls the judge model. One prompt costs one workflow run plus up to five evaluation runs for the team (final answer and four specialists), or one agent run plus two evaluation runs for the single agent. Start with one or two test cases.
 - The default judge is the `gpt-5.6-luna` deployment, the model that also writes the final answer in both set-ups. Point `judge_model_secret` at another deployment to avoid a model judging its own text.
-- **Agents with local function tools.** One turn of `weatherAgent`, `hotelAgent` or `travelAgent` is a chain of stored responses: the function call, then the reply written after the tool result. The script sends the id of the last response of the turn. Whether the judge also sees the function call from the earlier response depends on how Foundry follows the chain.
-- **Web search.** Foundry documents limited support of the tool evaluators for web search calls, so `tool_call_accuracy` is excluded for `webDataAgent`. A web search result holds the query and the source addresses, not the page contents.
-- **The agent's system prompt** is not sent with `agent_evaluation_source: responses`: the judge gets what Foundry stored with the response. With `conversation` the script adds the prompt from the local file, and the report lists the agents judged that way in `agents_judged_with_prompt`; the judge is then only accurate when the deployed agents use the same prompts as the local files.
-- The report records the source in `agent_evaluation_source`. Scores from the two sources are not directly comparable.
+- The judge sees an agent's function tool calls and their results, but not the calls of tools that run server-side (knowledge base, web search), and not the agents' system prompts, which live in Foundry. The agent evaluation therefore uses only `relevance` and, for agents with function tools, `tool_call_accuracy`. `task_adherence` is not used: it judges an agent against its instructions and tool evidence, which this evaluation does not provide.
 
 ---
 

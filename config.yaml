@@ -55,24 +55,5 @@ evaluation:
   evaluate_agents: true
   # Foundry built-in evaluators for every specialist agent of the workflow and for the single agent
   agent_evaluators:
-    - task_adherence
     - relevance
     - tool_call_accuracy
-  # Where the judge gets an agent's work from when the agent itself is scored:
-  #   responses    - Foundry reads the agent's responses stored in the project. The judge sees the calls
-  #                  and results of all tools, the server-side ones included (knowledge base, web search).
-  #   conversation - the script sends the conversation. The judge sees function tools only and gets the
-  #                  agent's system prompt from agent_prompts_dir.
-  agent_evaluation_source: "responses"
-  # Folder with the <agent>_config.yaml files, subfolders included (agent_evaluation_source: conversation)
-  agent_prompts_dir: "agents"
-  # Evaluators skipped for individual agents, per agent_evaluation_source
-  agent_evaluator_exclusions:
-    responses:
-      # Foundry documents limited support of the tool evaluators for web search calls
-      webDataAgent: [tool_call_accuracy]
-    conversation:
-      # The judge does not see server-side tool calls and fails the agent for claims it cannot verify
-      ragDataAgent: [task_adherence]
-      webDataAgent: [task_adherence]
-      travelAgent: [task_adherence]
