@@ -23,6 +23,7 @@ from utils.agent_middleware import (
     log_manager_decisions,
     log_tool_calls,
 )
+from utils.utils import add_todays_date
 
 # WARNING shows tool-loop problems such as "Maximum consecutive function call errors reached"
 logging.getLogger("agent_framework").setLevel(logging.WARNING)
@@ -222,7 +223,9 @@ async def run_workflow(manager_agent, participants, user_id: str):
 
             # Run the workflow-agent directly using standard agent execution
             blocked_reply_monitor.reset()
-            result = await agent.run(user_message_text)
+            # The agents do not know the current date, so it is put in front of the message.
+            # The conversation history below keeps the message as the user wrote it.
+            result = await agent.run(add_todays_date(user_message_text))
 
             # The result object from an agent run typically contains a text property
             final_text = getattr(result, "text", str(result))

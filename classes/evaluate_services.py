@@ -7,6 +7,8 @@ import yaml
 from agent_framework import AgentMiddleware, add_usage_details, evaluate_agent, evaluate_workflow
 from agent_framework.foundry import FoundryEvals
 
+from utils.utils import add_todays_date
+
 # Token counts reported in usage_details of an agent response. The input count includes
 # the cached input tokens and the output count includes the reasoning tokens.
 TOKEN_FIELDS = (
@@ -277,9 +279,11 @@ class EvaluateService:
         raised, so one error does not lose the results of the other test cases.
         """
         record = {"id": test_case["id"], "query": test_case["query"]}
+        # The agents get today's date in front of the query, as in the chat
+        task = add_todays_date(test_case["query"])
 
         try:
-            run = await self.run_workflow(workflow, test_case["query"])
+            run = await self.run_workflow(workflow, task)
         except Exception as error:
             record["error"] = f"{type(error).__name__}: {error}"
             # Tokens used before the failure still count
@@ -321,9 +325,11 @@ class EvaluateService:
         are recorded instead of raised.
         """
         record = {"id": test_case["id"], "query": test_case["query"]}
+        # The agent and the judge get today's date in front of the query, as in a workflow run
+        task = add_todays_date(test_case["query"])
 
         try:
-            run = await self.run_agent(agent, test_case["query"])
+            run = await self.run_agent(agent, task)
         except Exception as error:
             record["error"] = f"{type(error).__name__}: {error}"
             # Tokens used before the failure still count
@@ -341,13 +347,13 @@ class EvaluateService:
         eval_name = f"{agent.name} - {test_case['id']}"
         if test_case.get("judge_final_answer", True):
             record["final_answer_evaluation"] = await self._run_evaluation(
-                self.evaluate_agent_final_answer(agent, test_case["query"], response, f"{eval_name} - final answer")
+                self.evaluate_agent_final_answer(agent, task, response, f"{eval_name} - final answer")
             )
         else:
             record["final_answer_evaluation"] = self._skipped_evaluation()
         if self.agent_evaluation_enabled:
             results = await self._run_evaluation(
-                self.evaluate_agent_work(agent, test_case["query"], response, f"{eval_name} - agent")
+                self.evaluate_agent_work(agent, task, response, f"{eval_name} - agent")
             )
             record["agent_evaluation"] = {
                 "status": results["status"],

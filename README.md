@@ -1,6 +1,11 @@
 # Travel Agent Planner
 
-> **This is the multi-agent version.** The `main` branch runs a team of five agents coordinated with the **Magentic orchestration** from Microsoft Agent Framework. The another version with a single agent is on the [`single-agent`](https://github.com/Po33ski/Travel-Agent-Planner/tree/single-agent) branch.
+This project contains **two approaches** to the same travel assistant. They are built side by side so that they can be compared and the better one chosen:
+
+1. **Multi-agent orchestration.** A manager agent and four specialist agents, each with one tool. This approach is more expensive and slower, because every request takes many model calls. In return it is more deterministic: each tool is encapsulated in its own agent with narrow instructions.
+2. **Single agent.** One agent with all four tools. This approach is cheaper and faster, but carries a higher risk of non-deterministic behaviour, because one prompt holds every rule and every tool. Its low cost makes a stronger model such as `gpt-5.6-terra` affordable, and a stronger model makes the agent considerably more reliable. Running the whole team on such a model would be too expensive.
+
+The rest of this introduction describes the multi-agent approach, which the chat uses. The single agent is described [below](#single-agent-variant).
 
 An AI assistant that helps you plan a trip to a chosen destination anywhere in the world. A **manager agent** plans the work and delegates it to four **specialist agents**, all hosted server-side in **Azure AI Foundry Agent Service**:
 
@@ -14,7 +19,16 @@ The team uses **two LLMs**: `gpt-5.6-luna` for the manager, which does the plann
 A typical answer includes a weather summary for the travel dates, a day-by-day plan based on the travel guide, hotel suggestions with ratings, the reasons why they match the user's preferences and links (when the user asks about accommodation), and transport and practical tips. The final answer is also read out with **Azure AI Speech** and saved as an audio file.
 
 Every user signs in with a name. Their profile, preferences and conversation history (in a chat fine-tuning format) are kept in **Azure Cosmos DB**, and **Azure AI Language** detects the language of each question and stores it as a preference. All endpoints, resource names and keys live in **Azure Key Vault**, so the only setting a script needs is the Key Vault URL.
+
 ![Travel Agent Planner architecture](docs/architecture.svg)
+
+### Single-agent variant
+
+The repository also contains `travelAgent`: **one prompt agent** on `gpt-5.6-luna` that does the work of the whole team. It has all four tools (knowledge base, web search, weather, hotel search) and one system prompt with the same rules as the team. There is no manager and no orchestration: the local client calls the agent once, and the agent itself decides which tools to call and writes the final answer. This takes far fewer model calls than the manager's planning and progress checks plus the specialists' turns.
+
+The chat does not use `travelAgent`. It exists so that the [evaluation](#evaluation) can run the same test prompts through both set-ups and compare answer quality, time and token usage. It reuses the team's Azure resources, knowledge base and RAI policy, and has no user memory, language detection or speech.
+
+![Travel Agent Planner single-agent architecture](docs/single_agent_architecture.svg)
 
 ## Table of contents
 
@@ -40,8 +54,8 @@ Every user signs in with a name. Their profile, preferences and conversation his
 | `agents/<agent>_config.yaml` | One file per agent: agent name and system prompt |
 | `agent_execution.py` | Interactive command-line chat. Asks for the user name, builds the Magentic workflow, runs the weather and hotel search tools locally, saves the conversation and preferences to Cosmos DB and converts the final answer to speech |
 | `magentic_exe_and_eval.py` | Runs the test prompts through the Magentic workflow, evaluates every run and saves the report in `outputs/` |
-| `single_agent_exe_and_eval.py` | The same evaluation for the single agent `travelAgent`, which does the work of the whole team alone |
-| `agents/single_agent/travel_agent_deployment.py`, `agents/single_agent/travel_agent_config.yaml` | The single agent `travelAgent`: one agent with all four tools and the same rules as the team. Used only by `single_agent_exe_and_eval.py` |
+| `single_agent_exe_and_eval.py` | The same evaluation for the single agent `travelAgent` |
+| `agents/single_agent/` | Deployment script and config file (agent name and system prompt) of the single agent `travelAgent` |
 | `config.yaml` | Guardrail (RAI) settings shared by all agents, profile TTL for Cosmos DB, the NLP sentiment threshold and the evaluation settings |
 | `classes/evaluate_services.py` | `EvaluateService`: Foundry evaluators for the final answer and for every agent, rule checks, token counting and the report, for a workflow or a single agent. `TokenUsageMiddleware`: records the token usage of every agent call |
 | `classes/secret_manager_services.py` | `SecretManager`: reads secrets from Key Vault and caches them in memory |
@@ -53,12 +67,12 @@ Every user signs in with a name. Their profile, preferences and conversation his
 | `classes/hotel_services.py` | `HotelService` (Tavily client) and the `search_for_hotels` tool. The earlier hotel search: no agent uses it in this version |
 | `classes/speech_services.py` | `AzureSpeechService` and the `text_to_speech` helper |
 | `classes/rai_policies_services.py` | `RaiPolicyManager`: builds and deploys the RAI policy from `config.yaml` |
-| `utils/utils.py` | Helpers for normalising weather API responses |
+| `utils/utils.py` | `add_todays_date`, which puts today's date in front of every task, and helpers for normalising weather API responses |
 | `utils/agent_middleware.py` | Middleware shared by the run scripts: `log_tool_calls`, `log_manager_decisions`, `log_agent_replies`, `BlockedReplyMonitor` and `drop_foreign_tool_contents` |
 | `inputs/` | Source documents for the knowledge base (`world_city_travel_guide.md`, `.pdf`) and the test prompts for the evaluation (`evaluation_prompts.yaml`) |
 | `outputs/` | Audio file with the spoken final answer and the evaluation reports (`evaluation_<workflow>_<timestamp>.json`) |
 | `scripts/` | Step-by-step CLI commands for environment setup, deployment and deletion |
-| `docs/architecture.svg` | Architecture diagram shown at the top of this README |
+| `docs/` | The two architecture diagrams shown at the top of this README |
 
 ---
 
@@ -191,7 +205,7 @@ python agents/hotel_agent_deployment.py
 
 Each script creates or updates the `StrictGuardrail` RAI policy, then creates a new version of its agent with the system prompt, tools and policy attached.
 
-Optional: deploy the single agent `travelAgent`. The chat does not use it; it is needed only to compare a single agent with the team (see [Evaluation](#evaluation)).
+Optional: deploy the single agent `travelAgent`, which only the [evaluation](#evaluation) uses.
 
 ```powershell
 python agents/single_agent/travel_agent_deployment.py
@@ -207,7 +221,7 @@ python agent_execution.py
 
 The chat first asks for your **user name** and does not start the agents until you give one. A known name loads your existing profile, and a new name creates one (see [User memory and language detection](#user-memory-and-language-detection)).
 
-Type your questions at the `You:` prompt. Type `exit` or `quit`, or press `Ctrl+C`, to end the session. Every local tool call is logged as `[TOOL] -> ...` / `[TOOL] <- ...`, every decision of the manager as `[MANAGER] ...` and every reply of a specialist as `[AGENT] ...`.
+Type your questions at the `You:` prompt. Type `exit` or `quit`, or press `Ctrl+C`, to end the session. The console shows what the team is doing in `[TOOL]`, `[MANAGER]` and `[AGENT]` lines (see [Orchestration](#orchestration-agent_executionpy)).
 
 Each message is handled as a separate task and **the team does not remember earlier messages**, so put everything the team needs (destination, dates, budget, interests) in one message. An answer takes longer than with a single agent, because the manager and the specialists make several model calls per message.
 
@@ -238,7 +252,7 @@ Both scripts need only `KEY_VAULT_URL`. They run the test prompts from `inputs/e
 
 ## Infrastructure: `resource_deployment.bicep`
 
-The template is based on the [Foundry basic setup sample](https://github.com/microsoft-foundry/foundry-samples/blob/main/infrastructure/infrastructure-setup-bicep/00-basic/main.bicep) and extended with the RAG components, Speech, Language, Cosmos DB and Key Vault. It deploys to the resource group's location.
+The template is based on the [Foundry basic setup sample](https://github.com/microsoft-foundry/foundry-samples/blob/main/infrastructure/infrastructure-setup-bicep/00-basic/main.bicep) and extended with the RAG components, Speech, Language, Cosmos DB and Key Vault.
 
 ### Region
 
@@ -339,10 +353,6 @@ Even though most services are called with keys, Key Vault itself is always opene
 
 Role assignments for a fully managed-identity setup (Search → Storage, Search → Foundry, project → Search) are included in the template but commented out. The free Search tier does not support managed identities.
 
-### Outputs
-
-The only output is `KEY_VAULT_URL`. It isn't a secret, and everything else is read from Key Vault.
-
 ---
 
 ## The agents
@@ -386,8 +396,8 @@ Details worth knowing:
 - **The manager picks agents by name and description.** Each `FoundryAgent` is created with a `description`, and the manager's system prompt lists the same team.
 - **Function tools run locally.** `weatherAgent` and `hotelAgent` get the Python implementations of their tools. When the server-side agent requests a function call, `FoundryAgent` runs the local function and sends the result back. The MCP knowledge base and web search tools run entirely server-side.
 - **Limits.** `max_round_count=20`: one round is one progress check plus one agent turn, and a workflow that reaches the limit ends *without* a final answer. `max_stall_count=3`: after more than three rounds without progress the manager resets the team and replans. A reset clears the shared conversation, so the manager starts again from the first agent and asks for data it already had; the round count is not reset. `max_reset_count=2`: at the second reset the workflow terminates, also *without* a final answer, instead of repeating the same rounds up to the round limit.
+- **Today's date.** The agents do not know the current date, so `add_todays_date` (`utils/utils.py`) puts the line `Today's date: YYYY-MM-DD (weekday)` in front of every message. The manager uses it to turn "next week" into dates and to tell whether a trip is within the 15 days of the weather forecast. The conversation history keeps the message as the user wrote it.
 - **No memory between messages.** A Magentic workflow handles exactly one task and accepts a single task message, so a new workflow is built for every user message. The conversation history in Cosmos DB is a record for fine-tuning; it isn't passed back to the agents.
-- **Speech.** The final answer is passed to `text_to_speech` and saved as a WAV file in `outputs/`.
 - **Agents share text answers only.** Magentic passes every agent's reply to the other agents, including the function call and its raw result. An agent that already has a server-side conversation would then send a tool result without the matching call, and the service rejects it with *"No tool call found for function call output"*. The `drop_foreign_tool_contents` middleware (`utils/agent_middleware.py`) on every agent removes these tool contents from the incoming messages. This also keeps raw tool output out of the other agents' context.
 - **Refused or blocked answers.** A reply that the model refuses, or that the content filter cuts off on the output side, arrives without an error: the text ends early and a refusal such as *"I'm sorry, but I cannot assist with that request."* takes its place. `BlockedReplyMonitor` (`utils/agent_middleware.py`) on every agent detects this and prints `[GUARDRAIL]` lines with the refusal, the finish reason, the response status and any content filter results the service reported. No filter results usually means the model refused on its own. A blocked *input* is different: it raises `ChatClientContentFilterException`, which the chat reports as *"blocked by the content safety policy"*.
 - **Console log.** `log_tool_calls` prints every local function call and a truncated result as `[TOOL] -> ...` / `[TOOL] <- ...`. `log_manager_decisions` prints the manager's decision at the start of every round as `[MANAGER] ...`: the next agent, the reason and the instruction, or that the request is satisfied. `log_agent_replies` prints what each specialist sent back as `[AGENT] <name> replied: ...`, truncated to 1,500 characters. All three are in `utils/agent_middleware.py`.
@@ -398,7 +408,7 @@ Details worth knowing:
 
 - **Scope.** A request that is not directly about travel or trip planning goes to no agent: the manager marks it as satisfied in the first progress check and replies exactly *"I'm sorry, I can't help with that. I am only a travel-planning assistant."*
 - **Country information only.** A request for general information about a country or for entry rules such as visas, with no trip to plan, goes to `webDataAgent` alone. The other three agents are not asked.
-- **Delegation order for a trip.** Destination information goes to `ragDataAgent` first, and to `webDataAgent` only for what the knowledge base did not return. Weather is mandatory whenever the request names a city or place to visit, also without dates and when the user asks only about attractions, food or hotels. Hotels are searched only when the user asks about accommodation.
+- **Delegation order for a trip.** Destination information goes to `ragDataAgent` first, and to `webDataAgent` only for what the knowledge base did not return. Weather is mandatory whenever the request names a city or place to visit, also without dates and when the user asks only about attractions, food or hotels. The exception is a trip that takes place, in whole or in part, later than the next 15 days: the forecast does not reach that far, so `weatherAgent` is not asked at all and the answer says that the forecast is not available yet. Hotels are searched only when the user asks about accommodation.
 - **Asking an agent again.** Allowed in two cases only: several cities (one instruction per city), and a wrong or weak reply (one more attempt, with an instruction that says what was wrong). Otherwise an agent that has already replied for a city, with data, "not found" or an error, is not asked again. `hotelAgent` is asked once per city, with everything the user said about the hotel they want, for 2 or 3 hotels where only the name is required: missing ratings or links are not a reason to ask again. The manager never asks for prices per night or availability, because the hotel search does not have them.
 - **Finishing.** As soon as every needed agent has replied, the manager marks the request as satisfied in the progress check and writes the final answer, naming anything still missing. It never picks an agent a third time for the same city.
 - **No questions to the user.** The user cannot be asked during a task, so the manager uses sensible defaults and states its assumptions in the answer.
@@ -410,18 +420,20 @@ Details worth knowing:
 - **`ragDataAgent`** always calls `knowledge_base_retrieve`, uses only passages about the requested destination and starts its reply with *"From the knowledge base:"*. It adds no citation markers: the knowledge base returns passages without them, so a marker such as `【6:0†source】` would be invented. It ends with a *"Not found in the knowledge base:"* line, so the manager knows what to send to web search.
 - **`webDataAgent`** searches for travel information missing from the knowledge base and for general information about any country (entry and visa rules, currency, language, safety, customs, public holidays). It searches only for the items it was asked about, prefers official sources and gives each finding with its source. It does not search for weather or hotels.
 - **`weatherAgent`** reports max/min temperature, precipitation probability, wind speed and conditions for each day, and bases packing tips on the actual data.
-- **`hotelAgent`** passes the user's hotel preferences to the search as a few keywords, gets up to 20 hotels back and recommends the 2 or 3 that match best, the best match first. It compares each hotel with the preferences using its type, address, summary, guest reviews, rating and amenities, and prefers a hotel whose data confirms a preference over one that is only highly rated. Without preferences it picks well-rated hotels with many reviews. Only the hotel name is required; for each hotel the agent says why it matches and adds the rating, the price category and the links when the results contain them. A missing field means the search has no such data, not "no", and a preference that the results cannot confirm is named instead of guessed. The agent never states a price per night and ends with one line saying that room prices and availability have to be checked on the hotel's website. It never repeats an identical search, because the same city, preferences and language return the same results.
+- **`hotelAgent`** passes the user's hotel preferences to the search as a few keywords and recommends the 2 or 3 returned hotels that match best, the best match first. It prefers a hotel whose data (type, address, summary, guest reviews, rating, amenities) confirms a preference over one that is only highly rated; without preferences it picks well-rated hotels with many reviews. Only the hotel name is required: the reason for the match, the rating, the price category and the links are added when the results contain them, and a preference that the results cannot confirm is named instead of guessed. The agent never states a price per night and ends with one line saying that room prices and availability have to be checked on the hotel's website.
 
 ---
 
 ## Tools
 
-| Tool | Agent | Type | Where it runs | Purpose |
-|---|---|---|---|---|
-| `knowledge_base_retrieve` | `ragDataAgent` | MCP (Foundry IQ) | Server-side | RAG retrieval from the travel guide |
-| `web_search` | `webDataAgent` | Built-in `WebSearchTool` | Server-side | General country information, and fallback for information missing from the knowledge base |
-| `get_forecast_weather` | `weatherAgent` | `FunctionTool` | Locally, in `agent_execution.py` | Daily forecast for a location and date range |
-| `search_hotels_google_maps` | `hotelAgent` | `FunctionTool` | Locally, in `agent_execution.py` | Hotel search on Google Maps via the Places API |
+The single agent `travelAgent` has all four tools.
+
+| Tool | Team agent | Type | Where it runs |
+|---|---|---|---|
+| `knowledge_base_retrieve` | `ragDataAgent` | MCP (Foundry IQ) | Server-side |
+| `web_search` | `webDataAgent` | Built-in `WebSearchTool` | Server-side |
+| `get_forecast_weather` | `weatherAgent` | `FunctionTool` | Locally, in the script that runs the agents |
+| `search_hotels_google_maps` | `hotelAgent` | `FunctionTool` | Locally, in the script that runs the agents |
 
 ### Foundry IQ knowledge base (`knowledge_base_retrieve`)
 
@@ -437,7 +449,7 @@ Details worth knowing:
 
 ### Web search
 
-A `WebSearchTool` with a medium search context size, an approximate user location (Warsaw, PL) and `external_web_access=False`. The manager sends work to `webDataAgent` only when the knowledge base has no answer.
+A `WebSearchTool` with a medium search context size, an approximate user location (Warsaw, PL) and `external_web_access=False`.
 
 ### Weather tool (`classes/weather_services.py`)
 
@@ -506,8 +518,6 @@ What the search does not have:
 
 As with the weather tool, errors never raise exceptions. A missing city, a key that can't be read, no results or a failed call come back as `{"error": "..."}`. For a failed call the message includes Google's explanation, for example an invalid key or a project where Places API (New) is not enabled.
 
-**Earlier hotel search.** `classes/hotel_services.py` still holds the previous implementation: `search_for_hotels`, which searched booking.com, hotels.com and tripadvisor.com through the [Tavily Search API](https://docs.tavily.com) and returned raw page snippets. No agent uses it in this version. The template still creates its `TAVILY-API-KEY` secret.
-
 ### Text-to-speech (`classes/speech_services.py`)
 
 Speech is not an agent tool. `agent_execution.py` calls `text_to_speech(text, voice_name="en-US-AvaMultilingualNeural")` itself after every final answer. The function reads `SPEECH-KEY` and `SPEECH-REGION` from Key Vault, and `AzureSpeechService.synthesize_speech()` writes the audio to a WAV file in `outputs/`. It returns a `Success: ...` or `ERROR: ...` string and never raises an exception. `AzureSpeechService` also has a `transcribe_audio()` method for speech-to-text, which the chat does not use yet.
@@ -575,14 +585,14 @@ If the language can't be recognised (very short text such as *"ok"* returns `(Un
 
 ## Evaluation
 
-Two scripts measure answer quality and token usage on the same set of test prompts, so the Magentic team can be compared with a single agent:
+Two scripts measure answer quality, time and token usage on the same set of test prompts, so the Magentic team can be compared with a single agent:
 
 | Script | What it evaluates |
 |---|---|
 | `magentic_exe_and_eval.py` | The Magentic workflow of `agent_execution.py`: the manager and the four specialist agents |
-| `single_agent_exe_and_eval.py` | `travelAgent` (`agents/single_agent/`): one prompt agent on `gpt-5.6-luna` with all four tools (knowledge base, web search, weather, hotel search). Its system prompt is modelled on the `single-agent` branch and carries the same rules as the team: scope and refusal sentence, web search only for country information, knowledge base first, mandatory weather, 2 or 3 hotels, the same answer structure and the 500-word limit |
+| `single_agent_exe_and_eval.py` | `travelAgent`, the [single-agent variant](#single-agent-variant): one agent run per prompt, no orchestration |
 
-Both scripts only run and evaluate the agents. They do not ask for a user name, do not write to Cosmos DB and do not produce speech, so test prompts never end up in a user's conversation history. All evaluation logic is in `EvaluateService` (`classes/evaluate_services.py`).
+Both scripts only run and evaluate the agents. As in the chat, today's date is put in front of every test prompt. They do not ask for a user name, do not write to Cosmos DB and do not produce speech, so test prompts never end up in a user's conversation history. All evaluation logic is in `EvaluateService` (`classes/evaluate_services.py`).
 
 ### Test prompts (`inputs/evaluation_prompts.yaml`)
 
@@ -607,6 +617,7 @@ The six prompts cover a full trip plan, destination information without hotels, 
 | Final answer | `evaluate_final_answer` | `evaluate_agent_final_answer` | Foundry built-in evaluators with an LLM judge: `task_completion`, `intent_resolution`, `relevance`, `coherence` (`final_answer_evaluators` in `config.yaml`) |
 | Agents | `evaluate_agents`: every specialist separately | `evaluate_agent_work`: the agent's own work, tool use included | Foundry built-in evaluators: `relevance`, `tool_call_accuracy` (`agent_evaluators`). The tool evaluator is skipped for agents without function tools |
 | Rules | `check_final_answer` with the agents that were called | `check_final_answer` with the tools that were called (`count_tool_calls`) | Local checks without model calls: the word limit of the answer and the optional fields of the test case |
+| Time | `run_workflow` | `run_agent` | Duration of every run in seconds, from the prompt to the final answer. The evaluation runs that follow are not included |
 | Tokens | `count_workflow_tokens` | `count_workflow_tokens` | Input, cached input, output, reasoning and total tokens and the number of calls, per agent and in total |
 
 The Foundry evaluators run in the Foundry project, not locally: the script uploads the conversation through the built-in `evaluate_workflow` (workflow) or `evaluate_agent` (single agent) with `FoundryEvals` and waits for the evaluation run. The runs are also listed in the Foundry portal under **Evaluations**.
@@ -640,13 +651,13 @@ The two reports have the same format. Compare the metrics in `summary.final_answ
 
 - Every run calls the models, and every Foundry evaluation run calls the judge model. One prompt costs one workflow run plus up to five evaluation runs for the team (final answer and four specialists), or one agent run plus two evaluation runs for the single agent. Start with one or two test cases.
 - The default judge is the `gpt-5.6-luna` deployment, the model that also writes the final answer in both set-ups. Point `judge_model_secret` at another deployment to avoid a model judging its own text.
-- The judge sees an agent's function tool calls and their results, but not the calls of tools that run server-side (knowledge base, web search), and not the agents' system prompts, which live in Foundry. The agent evaluation therefore uses only `relevance` and, for agents with function tools, `tool_call_accuracy`. `task_adherence` is not used: it judges an agent against its instructions and tool evidence, which this evaluation does not provide.
+- The judge sees an agent's function tool calls and their results, but not the calls of the server-side tools (knowledge base, web search) and not the agents' system prompts, which live in Foundry. The agent evaluation is therefore limited to `relevance` and, for agents with function tools, `tool_call_accuracy`.
 
 ---
 
 ## Guardrail configuration: `StrictGuardrail`
 
-Content safety is enforced by a custom **RAI (Responsible AI) policy** attached to **all five agents**. The policy is defined in `config.yaml`, and `RaiPolicyManager` (`classes/rai_policies_services.py`) deploys it with the Azure management SDK (`azure-mgmt-cognitiveservices`) to the Foundry account.
+Content safety is enforced by a custom **RAI (Responsible AI) policy** attached to **all five agents** of the team and to the single agent `travelAgent`. The policy is defined in `config.yaml`, and `RaiPolicyManager` (`classes/rai_policies_services.py`) deploys it with the Azure management SDK (`azure-mgmt-cognitiveservices`) to the Foundry account.
 
 ```yaml
 guardrails:

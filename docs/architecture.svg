@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1460" height="1300" viewBox="0 0 1460 1300" role="img" aria-labelledby="title desc">
   <title id="title">Travel Agent Planner multi-agent architecture</title>
-  <desc id="desc">Five prompt agents in Azure AI Foundry Agent Service, all guarded by one RAI policy: a manager agent on gpt-5.6-luna and four specialist agents on gpt-5-mini for the knowledge base, web search, weather and hotels. A Magentic workflow in the local client asks for the user name, calls every agent, runs the weather and hotel function tools against the Visual Crossing and Tavily APIs, detects the language of each question with Azure AI Language, stores the user profile, preferences and conversation history in Azure Cosmos DB and converts the final answer to speech with Azure AI Speech. Every local script reads its endpoints, names and keys from Azure Key Vault. Setup scripts deploy the Azure resources to Switzerland North, build the knowledge base and create the agents.</desc>
+  <desc id="desc">Five prompt agents in Azure AI Foundry Agent Service, all guarded by one RAI policy: a manager agent on gpt-5.6-luna and four specialist agents on gpt-5-mini for the knowledge base, web search, weather and hotels. A Magentic workflow in the local client asks for the user name, calls every agent, runs the weather and hotel function tools against the Visual Crossing and Google Maps Places APIs, detects the language of each question with Azure AI Language, stores the user profile, preferences and conversation history in Azure Cosmos DB and converts the final answer to speech with Azure AI Speech. Every local script reads its endpoints, names and keys from Azure Key Vault. Setup scripts deploy the Azure resources to Switzerland North, build the knowledge base and create the agents.</desc>
 
   <style>
     text { font-family: "Segoe UI", -apple-system, "Helvetica Neue", Arial, sans-serif; fill: #1F2328; }
@@ -63,7 +63,7 @@
   <rect x="62" y="322" width="276" height="26" rx="13" class="fn"/>
   <text x="200" y="339" class="mono c" style="font-size:12px">get_forecast_weather</text>
   <rect x="62" y="354" width="276" height="26" rx="13" class="fn"/>
-  <text x="200" y="371" class="mono c" style="font-size:12px">search_for_hotels</text>
+  <text x="200" y="371" class="mono c" style="font-size:12px">search_hotels_google_maps</text>
   <text x="62" y="404" class="s">middleware: log_tool_calls (prints every call)</text>
   <text x="62" y="432" class="t" style="font-size:11.5px">User, memory and settings</text>
   <text x="62" y="452" class="s">start: asks for the user name → user id</text>
@@ -89,13 +89,12 @@
   <text x="119" y="808" class="mono c" style="font-size:9px;fill:#57606A">VISUAL-CROSSING-API-KEY</text>
 
   <rect x="208" y="672" width="146" height="154" rx="10" fill="#FFFFFF" stroke="#E3A008"/>
-  <text x="281" y="698" class="t c">Tavily</text>
-  <text x="281" y="716" class="s c">Search API · advanced</text>
-  <text x="281" y="744" class="xs mono c">booking.com</text>
-  <text x="281" y="760" class="xs mono c">hotels.com</text>
-  <text x="281" y="776" class="xs mono c">tripadvisor.com</text>
+  <text x="281" y="698" class="t c">Google Maps</text>
+  <text x="281" y="716" class="s c">Places API (New)</text>
+  <text x="281" y="744" class="xs c">Text Search</text>
+  <text x="281" y="760" class="xs c">up to 20 hotels</text>
   <text x="281" y="792" class="xs c">key from Key Vault</text>
-  <text x="281" y="808" class="mono c" style="font-size:9px;fill:#57606A">TAVILY-API-KEY</text>
+  <text x="281" y="808" class="mono c" style="font-size:9px;fill:#57606A">GOOGLE-API-KEY</text>
 
   <!-- Local tools -> external APIs -->
   <path d="M119,584 V672" class="run" marker-end="url(#a-run)"/>
@@ -155,7 +154,7 @@
   <text x="637" y="434" class="mono c" style="font-size:10.5px">get_forecast_weather</text>
   <rect x="776" y="398" width="254" height="46" rx="10" class="fn"/>
   <text x="903" y="417" class="t c">hotelAgent <tspan class="s" style="font-weight:400">· gpt-5-mini</tspan></text>
-  <text x="903" y="434" class="mono c" style="font-size:10.5px">search_for_hotels</text>
+  <text x="903" y="434" class="mono c" style="font-size:10.5px">search_hotels_google_maps</text>
 
   <!-- Specialists with server-side tools -->
   <rect x="498" y="462" width="544" height="80" rx="8" class="row" stroke="#6E7781"/>
@@ -165,7 +164,7 @@
   <text x="637" y="522" class="mono c" style="font-size:10.5px">knowledge_base_retrieve · MCP</text>
   <rect x="776" y="486" width="254" height="46" rx="10" fill="#EAF6F9" stroke="#1B7C9A"/>
   <text x="903" y="505" class="t c">webDataAgent <tspan class="s" style="font-weight:400">· gpt-5-mini</tspan></text>
-  <text x="903" y="522" class="mono c" style="font-size:10.5px">web_search · fallback only</text>
+  <text x="903" y="522" class="mono c" style="font-size:10.5px">web_search · country info · fallback</text>
 
   <!-- Project connection -->
   <rect x="510" y="582" width="254" height="56" rx="10" fill="#FFFFFF" stroke="#8250DF"/>
@@ -230,10 +229,10 @@
 
   <!-- Azure Key Vault -->
   <rect x="466" y="1170" width="608" height="84" rx="10" class="kv"/>
-  <text x="482" y="1192" class="group" style="fill:#7D4E00">Azure Key Vault <tspan class="s" style="font-weight:400">· Azure RBAC · 25 secrets</tspan></text>
+  <text x="482" y="1192" class="group" style="fill:#7D4E00">Azure Key Vault <tspan class="s" style="font-weight:400">· Azure RBAC · 27 secrets</tspan></text>
   <text x="482" y="1212" class="s" style="fill:#1F2328">every local script reads its endpoints, names and keys here (SecretManager · Entra ID)</text>
   <text x="482" y="1229" class="xs">written by resource_deployment.bicep · the only Bicep output is KEY_VAULT_URL</text>
-  <text x="482" y="1246" class="mono" style="font-size:9px;fill:#57606A">PROJECT-ENDPOINT · SEARCH-ENDPOINT · SPEECH-KEY · LANGUAGE-KEY · COSMOSDB-PRIMARY-KEY · TAVILY-API-KEY · …</text>
+  <text x="482" y="1246" class="mono" style="font-size:9px;fill:#57606A">PROJECT-ENDPOINT · SEARCH-ENDPOINT · SPEECH-KEY · LANGUAGE-KEY · COSMOSDB-PRIMARY-KEY · GOOGLE-API-KEY · …</text>
 
   <!-- Runtime arrows (Azure side) -->
   <!-- workflow <-> every agent -->
@@ -276,7 +275,7 @@
   <circle cx="1164" cy="152" r="10" class="badge"/><text x="1164" y="156" class="badge-t">1</text>
   <text x="1182" y="157" class="t mono" style="font-size:12px">resource_deployment.bicep</text>
   <text x="1162" y="177" class="s">az deployment group create (loads .env)</text>
-  <text x="1162" y="195" class="s" style="fill:#1F2328">→ resources, roles, 25 Key Vault secrets</text>
+  <text x="1162" y="195" class="s" style="fill:#1F2328">→ resources, roles, 27 Key Vault secrets</text>
 
   <rect x="1146" y="232" width="268" height="58" rx="10" class="box"/>
   <text x="1162" y="256" class="t mono" style="font-size:12px">config.yaml</text>
@@ -296,7 +295,7 @@
   <text x="1162" y="524" class="t">Local configuration</text>
   <text x="1162" y="542" class="xs">.env and launch.json are git-ignored</text>
   <text x="1162" y="566" class="s" style="fill:#1F2328">.env · read by the deployment only</text>
-  <text x="1162" y="582" class="mono" style="font-size:10px">VISUAL_CROSSING_API_KEY</text>
+  <text x="1162" y="582" class="mono" style="font-size:10px">VISUAL_CROSSING_API_KEY · GOOGLE_API_KEY</text>
   <text x="1162" y="598" class="mono" style="font-size:10px">TAVILY_API_KEY <tspan class="xs" style="font-family:'Segoe UI', Arial, sans-serif">→ stored in Key Vault</tspan></text>
   <text x="1162" y="622" class="s" style="fill:#1F2328">launch.json env · every script</text>
   <text x="1162" y="638" class="mono" style="font-size:10px">KEY_VAULT_URL</text>
