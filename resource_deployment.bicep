@@ -26,7 +26,7 @@ param cosmosDbAccountName string = '${projectPrefix}-cosmos'
 param databaseName string = '${projectPrefix}-cosmosdb'
 param containerName string = '${projectPrefix}-container'
 // Third-party API keys: scripts/01_resource_deployment.sh passes them from .env
-// (VISUAL_CROSSING_API_KEY, GOOGLE_API_KEY, TAVILY_API_KEY).
+// (VISUAL_CROSSING_API_KEY, GOOGLE_API_KEY).
 // Required: the deployment fails when a value is missing or empty.
 @secure()
 @minLength(1)
@@ -34,9 +34,6 @@ param visualCrossingApiKey string
 @secure()
 @minLength(1)
 param googleApiKey string
-@secure()
-@minLength(1)
-param tavilyApiKey string
 
 var knowledgeBaseApiVersion = '2026-08-01-preview'
 
@@ -582,15 +579,6 @@ resource googleApiKeySecret 'Microsoft.KeyVault/vaults/secrets@2026-02-01' = {
   name: 'GOOGLE-API-KEY'
   properties: {
     value: googleApiKey
-    contentType: 'text/plain'
-  }
-}
-
-resource tavilyApiKeySecret 'Microsoft.KeyVault/vaults/secrets@2026-02-01' = {
-  parent: keyVault
-  name: 'TAVILY-API-KEY'
-  properties: {
-    value: tavilyApiKey
     contentType: 'text/plain'
   }
 }

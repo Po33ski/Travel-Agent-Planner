@@ -296,7 +296,7 @@
   <text x="1162" y="542" class="xs">.env and launch.json are git-ignored</text>
   <text x="1162" y="566" class="s" style="fill:#1F2328">.env · read by the deployment only</text>
   <text x="1162" y="582" class="mono" style="font-size:10px">VISUAL_CROSSING_API_KEY · GOOGLE_API_KEY</text>
-  <text x="1162" y="598" class="mono" style="font-size:10px">TAVILY_API_KEY <tspan class="xs" style="font-family:'Segoe UI', Arial, sans-serif">→ stored in Key Vault</tspan></text>
+  <text x="1162" y="598" class="xs">→ stored in Key Vault</text>
   <text x="1162" y="622" class="s" style="fill:#1F2328">launch.json env · every script</text>
   <text x="1162" y="638" class="mono" style="font-size:10px">KEY_VAULT_URL</text>
   <text x="1162" y="654" class="mono" style="font-size:10px">SOURCE_FILE_PATH · USER_ROLE</text>

@@ -20,8 +20,7 @@ az deployment group create `
 --parameters projectPrefix="aiagent-travel9871v6" `
   userPrincipalId="$(az ad signed-in-user show --query id -o tsv)" `
   visualCrossingApiKey="$env:VISUAL_CROSSING_API_KEY" `
-  googleApiKey="$env:GOOGLE_API_KEY" `
-  tavilyApiKey="$env:TAVILY_API_KEY"
+  googleApiKey="$env:GOOGLE_API_KEY"
 
 # Get your deployment outputs
 az deployment group show `

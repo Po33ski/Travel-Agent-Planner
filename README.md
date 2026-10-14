@@ -64,7 +64,6 @@ The chat does not use `travelAgent`. It exists so that the [evaluation](#evaluat
 | `classes/foundry_iq_services.py` | `FoundryIQService`: blob upload, knowledge source, ingestion, knowledge base, MCP tool |
 | `classes/weather_services.py` | `WeatherService` and the `get_forecast_weather` / `get_current_weather` tools |
 | `classes/google_services.py` | `GooglePlacesService` (Google Maps Places API) and the `search_hotels_google_maps` tool |
-| `classes/hotel_services.py` | `HotelService` (Tavily client) and the `search_for_hotels` tool. The earlier hotel search: no agent uses it in this version |
 | `classes/speech_services.py` | `AzureSpeechService` and the `text_to_speech` helper |
 | `classes/rai_policies_services.py` | `RaiPolicyManager`: builds and deploys the RAI policy from `config.yaml` |
 | `utils/utils.py` | `add_todays_date`, which puts today's date in front of every task, and helpers for normalising weather API responses |
@@ -85,7 +84,6 @@ The chat does not use `travelAgent`. It exists so that the [evaluation](#evaluat
 - An Azure subscription where you can create resource groups and role assignments (for example, Owner)
 - A [Visual Crossing](https://www.visualcrossing.com/weather-api) API key for weather data
 - A [Google Maps Platform](https://console.cloud.google.com/google/maps-apis/start) API key with **Places API (New)** enabled, for hotel search (see [Hotel search tool](#hotel-search-tool-classesgoogle_servicespy))
-- A [Tavily](https://tavily.com) API key. No agent uses it in this version, but the template still requires it and stores it in Key Vault
 
 The template uses free tiers, and Azure allows **one of each per subscription**: a free (F0) Speech resource, a free (F0) Language resource, a free Azure AI Search service and a Cosmos DB account with the free tier. If one of them already exists, or a Speech or Language resource is still soft-deleted, the deployment fails (for example with `CanNotCreateMultipleFreeAccounts`). See [Clean-up](#clean-up) for how to purge soft-deleted resources.
 
@@ -109,12 +107,11 @@ az bicep upgrade
 
 ### 3. Add the third-party API keys to `.env`
 
-Create a `.env` file in the repository root. It is listed in `.gitignore`, so **never commit it**. It holds only the three keys that do not come from Azure:
+Create a `.env` file in the repository root. It is listed in `.gitignore`, so **never commit it**. It holds only the two keys that do not come from Azure:
 
 ```dotenv
 VISUAL_CROSSING_API_KEY="<your Visual Crossing key>"
 GOOGLE_API_KEY="<your Google Maps Platform key>"
-TAVILY_API_KEY="<your Tavily key>"
 ```
 
 The deployment passes them to the template as `@secure()` parameters, and the template stores them in Key Vault. The Python code never reads `.env`.
@@ -139,8 +136,7 @@ az deployment group create `
   --parameters projectPrefix="<prefix>" `
     userPrincipalId="$(az ad signed-in-user show --query id -o tsv)" `
     visualCrossingApiKey="$env:VISUAL_CROSSING_API_KEY" `
-    googleApiKey="$env:GOOGLE_API_KEY" `
-    tavilyApiKey="$env:TAVILY_API_KEY"
+    googleApiKey="$env:GOOGLE_API_KEY"
 
 # The only output is KEY_VAULT_URL
 az deployment group show `
@@ -276,7 +272,6 @@ To use another region, change `--location` in `az group create`. Existing resour
 | `userPrincipalId` | *(required)* | Object ID of the user who runs the scripts (`az ad signed-in-user show --query id -o tsv`) |
 | `visualCrossingApiKey` | *(required, secure)* | Visual Crossing API key, stored in Key Vault |
 | `googleApiKey` | *(required, secure)* | Google Maps Platform API key, stored in Key Vault |
-| `tavilyApiKey` | *(required, secure)* | Tavily API key, stored in Key Vault. No agent uses it in this version |
 | `aiFoundryName` | `projectPrefix` | Foundry (AIServices) account name and custom subdomain |
 | `aiProjectName` | `<aiFoundryName>-proj` | Foundry project name |
 | `llmModelDeploymentName` | `<prefix>-llm-deploy` | `gpt-5.6-luna` deployment, used by the manager agent |
@@ -333,7 +328,6 @@ The template writes **27 secrets**. A secret name is the setting name with `-` i
 | Language | `LANGUAGE-ENDPOINT`, `LANGUAGE-KEY` | `agent_execution.py` |
 | Cosmos DB | `COSMOSDB-ENDPOINT`, `COSMOSDB-DATABASE-NAME`, `COSMOSDB-CONTAINER-NAME`, `COSMOSDB-PRIMARY-KEY` | `agent_execution.py` |
 | Third-party APIs | `VISUAL-CROSSING-API-KEY`, `GOOGLE-API-KEY` | `weather_services.py`, `google_services.py` |
-| | `TAVILY-API-KEY` | `hotel_services.py`, which no agent uses in this version |
 
 Each script creates a `SecretClient` with `DefaultAzureCredential` and wraps it in `SecretManager`, which caches every secret in memory for the lifetime of the process.
 
@@ -349,7 +343,7 @@ The project uses a hybrid approach:
 - **User → Azure (keys from Key Vault).** The local client calls Speech, Language and Cosmos DB with keys that it reads from Key Vault. The weather and hotel tools read the Visual Crossing and Google Maps keys the same way.
 - **Service → service (keys).** AI Search reads Storage with the account connection string and calls the models with the Foundry API key. The knowledge base agent queries the knowledge base with the Search query key stored in the project connection.
 
-Even though most services are called with keys, Key Vault itself is always opened with Entra ID, so no secret is stored on disk except the three third-party keys in `.env`, which are only needed for the deployment.
+Even though most services are called with keys, Key Vault itself is always opened with Entra ID, so no secret is stored on disk except the two third-party keys in `.env`, which are only needed for the deployment.
 
 Role assignments for a fully managed-identity setup (Search → Storage, Search → Foundry, project → Search) are included in the template but commented out. The free Search tier does not support managed identities.
 
