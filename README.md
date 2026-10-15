@@ -521,7 +521,7 @@ Speech is not an agent tool. `agent_execution.py` calls `text_to_speech(text, vo
 Two things are defined in more than one place:
 
 - **Function tool schemas.** `agents/weather_agent_deployment.py` and `agents/hotel_agent_deployment.py` hold the `FunctionTool` JSON schemas for the server-side agents (`agents/single_agent/travel_agent_deployment.py` holds both for the single agent), and `weather_services.py` / `google_services.py` hold the `@tool` Python implementations for the client. Keep the tool and parameter names in sync.
-- **Agent names.** The `agent_name` in each `agents/<agent>_config.yaml` must match the name used in `agent_execution.py` and in the *Team* section of the manager's system prompt.
+- **Agent names.** The `agent_name` in each `agents/<agent>_config.yaml` must match the name used in `agent_execution.py` and `magentic_exe_and_eval.py`, the *Team* section of the manager's system prompt, `expected_agents` / `unexpected_agents` in `inputs/evaluation_prompts.yaml` and the keys of `evaluation.agent_evaluators` in `config.yaml`. An agent whose name is missing from `agent_evaluators` is silently not evaluated.
 
 ---
 
@@ -595,37 +595,80 @@ Each test case has an `id` and a `query`. Optional fields add rule checks:
 | Field | Check |
 |---|---|
 | `expected_keywords` | Words the final answer must contain (case-insensitive) |
-| `expected_answer` | Text the final answer must contain exactly, for example the refusal of an out-of-scope request |
+| `expected_answer` | Text the final answer must contain exactly, for example the refusal of an out-of-scope request. Typographic quotes and apostrophes count as plain ones |
 | `expected_agents` | Agents that must be called. Workflow only |
 | `unexpected_agents` | Agents that must not be called, for example `hotelAgent` when hotels were not requested. Workflow only |
 | `expected_tools` | Tools that must be called. Single agent only |
 | `unexpected_tools` | Tools that must not be called, for example `search_hotels_google_maps` when hotels were not requested. Single agent only |
 | `judge_final_answer` | `false` skips the LLM judge for the final answer. Used for the out-of-scope request: the judge does not know the assistant's scope and scores the correct refusal as a failed task. The rule checks still apply |
 
-The six prompts cover a full trip plan, destination information without hotels, a weather question, a request in Polish, a visa question that only web search may answer and an out-of-scope request. Dates are relative ("next week"), so the weather forecast stays available.
+The eleven prompts cover a full trip plan, destination information without dates or hotels, a weather question, a hotel request in Polish, hotel preferences with a price question (the search has no prices), a trip to two cities, a trip partly beyond the 15-day forecast (no forecast may be requested), a trip combined with a visa question, a visa question that only web search may answer, a city missing from the travel guide (knowledge base gap, web search fallback) and an out-of-scope request. Every destination is a city of the travel guide, except the visa questions and the city chosen as missing. Dates are relative ("next week", "in 10 days"), so each trip stays inside or outside the forecast range on any day the evaluation runs. A keyword in the language of the answer, such as "pogod" for Polish, checks the answer language.
 
 ### What is measured
 
 | Evaluation | Workflow | Single agent | How |
 |---|---|---|---|
-| Final answer | `evaluate_final_answer` | `evaluate_agent_final_answer` | Foundry built-in evaluators with an LLM judge: `task_completion`, `intent_resolution`, `relevance`, `coherence` (`final_answer_evaluators` in `config.yaml`) |
-| Agents | `evaluate_agents`: every specialist separately | `evaluate_agent_work`: the agent's own work, tool use included | Foundry built-in evaluators: `relevance`, `tool_call_accuracy` (`agent_evaluators`). The tool evaluator is skipped for agents without function tools |
+| Final answer | `evaluate_final_answer` | `evaluate_agent_final_answer` | Foundry built-in agent evaluators with an LLM judge (`final_answer_evaluators` in `config.yaml`) |
+| Agents | `evaluate_agents`: every specialist separately | `evaluate_agent_work`: the agent's own work, tool use included | Foundry built-in evaluators chosen per agent (`agent_evaluators` in `config.yaml`) |
 | Rules | `check_final_answer` with the agents that were called | `check_final_answer` with the tools that were called (`count_tool_calls`) | Local checks without model calls: the word limit of the answer and the optional fields of the test case |
 | Time | `run_workflow` | `run_agent` | Duration of every run in seconds, from the prompt to the final answer. The evaluation runs that follow are not included |
 | Tokens | `count_workflow_tokens` | `count_workflow_tokens` | Input, cached input, output, reasoning and total tokens and the number of calls, per agent and in total |
 
-The Foundry evaluators run in the Foundry project, not locally: the script uploads the conversation through the built-in `evaluate_workflow` (workflow) or `evaluate_agent` (single agent) with `FoundryEvals` and waits for the evaluation run. The runs are also listed in the Foundry portal under **Evaluations**.
+### Evaluators
 
-**Token counting.** `TokenUsageMiddleware` is added to every `FoundryAgent`. After each agent call it reads `usage_details` from the response and adds it to the totals of that agent. The Magentic manager is called by the orchestrator and does not appear in the workflow events as an agent, so the middleware is the only place that sees its usage.
+Only agent evaluators are used, plus `groundedness` for the knowledge base agent. General text-quality evaluators such as `relevance` and `coherence` were dropped: they scored almost every answer 5/5, and `relevance` punished `ragDataAgent` for correctly reporting that the knowledge base had no answer.
+
+| Evaluator | Scored for | What the judge checks | Score |
+|---|---|---|---|
+| `task_completion` | final answer, `webDataAgent` | The answer delivers a usable result that meets every requirement of the request | pass / fail |
+| `intent_resolution` | final answer, `webDataAgent` | The answer understands and addresses what the user wants | 1–5, passes at 3 |
+| `groundedness` | `ragDataAgent` | Every fact of the reply is backed by what the tools returned; nothing is invented | 1–5, passes at 3 |
+| `tool_call_accuracy` | `weatherAgent`, `hotelAgent`, `travelAgent` | The right function tools are called with the right parameters, without unnecessary calls | 1–5, passes at 3 |
+| `tool_output_utilization` | `weatherAgent`, `hotelAgent`, `travelAgent` | The reply uses the tool results correctly | pass / fail |
+
+An agent that is missing from `agent_evaluators` is not evaluated, and tool evaluators are skipped for an agent without function tools. Foundry has limited support for the tool evaluators and `groundedness` on web search, so `webDataAgent` is scored only on its behaviour.
+
+### What the judge sees
+
+- **Final answer of the workflow:** one item with the test prompt (today's date included) and the text of the final answer. The judge sees no tool calls, no specialist replies and no system prompt, so it cannot check the facts of the final answer.
+- **Final answer of the single agent:** `evaluate_agent` builds the item from the agent's whole response, so the judge also sees its function tool calls and results and the tool definitions. With more information it judges more strictly than for the workflow: keep this in mind when the two final-answer scores are compared.
+- **Agents:** one item per agent call, with the instruction the agent received (the user messages of its conversation, in the team the manager's instruction), its reply with its function tool calls and results, its function tools and a context.
+- **Context:** the text of everything the agent's tools returned, function tool results and MCP results such as the knowledge base passages of `knowledge_base_retrieve`. `FoundryEvals` does not pass MCP results to the judge in the conversation, so the context is the only way the judge sees them, and `groundedness` compares the reply with it. Web search results are not included: they carry links, not the text of the pages. When the tools returned nothing, the context says so, and a reply with facts then fails `groundedness`.
+- **Never seen:** the calls of the server-side tools (knowledge base, web search) and the agents' system prompts, which live in Foundry. This is why the out-of-scope test case skips the judge: it does not know the assistant's scope.
+
+### How the evaluation runs
+
+The Foundry evaluators run in the Foundry project, not locally: the script uploads the items with `FoundryEvals` and waits for the evaluation run, which calls the judge deployment. The runs are also listed in the Foundry portal under **Evaluations**.
+
+- The final answer goes through the built-in `evaluate_workflow` (workflow) or `evaluate_agent` (single agent).
+- The agents go through `_evaluate_agent_items`, one Foundry evaluation run per agent. `evaluate_workflow` cannot be used here: it applies one set of evaluators to every agent and passes no context. Instead, `evaluate_agents` takes every specialist call from the workflow events (`executor_completed` events of the agent executors) and builds the items itself (`_agent_item`). The single agent's work goes the same way, so both reports have the same format.
+- A failed evaluation is recorded in the report instead of stopping the script.
+
+**Token counting.** `TokenUsageMiddleware` is added to every `FoundryAgent`. After each agent call it reads `usage_details` from the response and adds it to the totals of that agent. The Magentic manager is called by the orchestrator and does not appear in the workflow events as an agent, so the middleware is the only place that sees its usage. The judge's tokens are taken from the evaluation results and counted separately.
 
 ### Report
 
+The console shows, for every test case, the final answer, the duration and tokens, the rule checks and the score of every evaluator. A failed evaluator also shows the first 300 characters of the judge's reason:
+
+```text
+[EVAL] ✅ expected_agents: all expected agents called
+[EVAL] Final answer (LLM judge):
+[EVAL]   ❌ task_completion: 0.0 - Hotel pricing and restaurant recommendations are largely absent.
+[EVAL]   ✅ intent_resolution: 4.0
+[EVAL] Agent ragDataAgent (LLM judge):
+[EVAL]   ✅ groundedness: 5.0
+```
+
+An agent called several times has one line per evaluator and call. A skipped or failed evaluation shows its status and error instead.
+
 Each script writes `outputs/evaluation_<name>_<timestamp>.json`, where the name is `travelPlannerWorkflow` or `travelAgent`:
 
-- `summary`: number of runs and failed runs, average duration, passed / failed counts and average score per metric (final answer, rule checks, each agent), and tokens in total, on average per run and per agent.
-- `cases`: one record per run with the query, the final answer, the duration, the token usage, the rule checks and the scores with the judge's explanations.
+- `summary`: number of runs and failed runs, average duration, passed / failed counts and average score per metric (final answer, rule checks, each agent), and tokens in total, on average per run, per agent and for the judge.
+- `cases`: one record per run with the query, the final answer, the duration, the token usage, the rule checks and, under `final_answer_evaluation` and `agent_evaluation`, every evaluator's score with the judge's explanation (`items[].scores[]`).
 
-The single agent's records also hold `called_tools`: the tools found in the agent's response and how often each was called. Function tools (`get_forecast_weather`, `search_hotels_google_maps`) are always there. The server-side tools (`knowledge_base_retrieve`, `web_search`) appear only when the service reports their calls, so the test prompts list them only under `unexpected_tools`.
+The `passed` / `failed` counts of an evaluation count *items*, not evaluators: an item passes only when every evaluator passes. The scores per evaluator are in `items[].scores[]` and in `summary`.
+
+The single agent's records also hold `called_tools`: the tools found in the agent's response and how often each was called. Function tools (`get_forecast_weather`, `search_hotels_google_maps`) are always there. The server-side tools (`knowledge_base_retrieve`, `web_search`) appear only when the service reports their calls, so the test prompts list them only under `unexpected_tools`. For the single agent, the routing checks therefore cannot confirm that the knowledge base or web search was used.
 
 The two reports have the same format. Compare the metrics in `summary.final_answer`, `summary.rule_checks` and `summary.tokens`.
 
@@ -638,14 +681,20 @@ The two reports have the same format. Compare the metrics in `summary.final_answ
 | `repetitions` | Runs per test case. More than 1 shows how stable the scores are |
 | `timeout_seconds` | How long to wait for one Foundry evaluation run |
 | `max_answer_words` | Word limit of the final answer, as set in the system prompt of the manager (`magentic`) and of the single agent (`single_agent`) |
-| `final_answer_evaluators`, `agent_evaluators` | Foundry built-in evaluator names |
+| `final_answer_evaluators` | Foundry built-in evaluator names for the final answer |
+| `agent_evaluators` | Foundry built-in evaluator names per agent, keyed by the agent name. An agent that is missing is not evaluated |
 | `evaluate_agents` | `false` skips the agent evaluation and saves judge calls |
+
+### Judge model
+
+The judge is the `gpt-5.6-luna` deployment, the model that also writes the final answer in both set-ups. A model tends to rate its own style of text higher, so the absolute scores, especially `task_completion` and `intent_resolution`, are likely too high. The bias affects the single agent and the team alike, so a comparison of architectures or prompts on the same models stays fair. The evaluators that compare a reply with tool data (`groundedness`, the tool evaluators) depend less on it.
+
+Point `judge_model_secret` at another deployment, such as `gpt-5.6-terra`, before comparing set-ups that use *different* models, or when the absolute scores matter, for example a pass-rate threshold. Keep the judge the same for all runs that are compared: scores from different judges are not comparable.
 
 ### Cost and limits
 
-- Every run calls the models, and every Foundry evaluation run calls the judge model. One prompt costs one workflow run plus up to five evaluation runs for the team (final answer and four specialists), or one agent run plus two evaluation runs for the single agent. Start with one or two test cases.
-- The default judge is the `gpt-5.6-luna` deployment, the model that also writes the final answer in both set-ups. Point `judge_model_secret` at another deployment to avoid a model judging its own text.
-- The judge sees an agent's function tool calls and their results, but not the calls of the server-side tools (knowledge base, web search) and not the agents' system prompts, which live in Foundry. The agent evaluation is therefore limited to `relevance` and, for agents with function tools, `tool_call_accuracy`.
+- Every run calls the models, and every Foundry evaluation run calls the judge model. One prompt costs one workflow run plus up to five evaluation runs for the team (final answer and four specialists), or one agent run plus two evaluation runs for the single agent. A full run of the eleven prompts is expensive: for a quick check, cut the test prompts down to two or three cases.
+- With one run per test case, small differences between two reports (for example 4.4 against 4.6) are noise. For a comparison, use `repetitions` of 3 or more.
 
 ---
 

@@ -6,4 +6,4 @@ tutorials/
 __pycache__/
 *.pyc
 outputs/
-CLAUDE.md
+CHANGELOG.md

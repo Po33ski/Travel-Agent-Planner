@@ -45,15 +45,31 @@ evaluation:
   max_answer_words:
     magentic: 500
     single_agent: 500
-  # Foundry built-in evaluators for the final answer
+  # Foundry built-in agent evaluators for the final answer of the workflow or of the single agent
   final_answer_evaluators:
     - task_completion
     - intent_resolution
-    - relevance
-    - coherence
-  # Agent evaluation adds one Foundry evaluation run per specialist agent (per run for the single agent)
+  # Agent evaluation adds one Foundry evaluation run per evaluated agent and test case
   evaluate_agents: true
-  # Foundry built-in evaluators for every specialist agent of the workflow and for the single agent
+  # Foundry built-in evaluators per agent: the key is the agent name, every call of the agent is one
+  # item. An agent that is missing here is not evaluated. The judge sees the instruction the agent
+  # received, its reply with its function tool calls and, as context, what its tools returned
+  # (function tool results and knowledge base passages); groundedness compares the reply with it.
   agent_evaluators:
-    - relevance
-    - tool_call_accuracy
+    # Knowledge base (MCP): is every fact of the reply backed by the retrieved passages?
+    ragDataAgent:
+      - groundedness
+    # Web search: Foundry has limited support for tool evaluators on web search, so only the behaviour is scored
+    webDataAgent:
+      - intent_resolution
+      - task_completion
+    weatherAgent:
+      - tool_call_accuracy
+      - tool_output_utilization
+    hotelAgent:
+      - tool_call_accuracy
+      - tool_output_utilization
+    # Single agent (single_agent_exe_and_eval.py); only its function tool calls are visible to the judge
+    travelAgent:
+      - tool_call_accuracy
+      - tool_output_utilization

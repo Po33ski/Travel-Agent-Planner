@@ -192,7 +192,7 @@ class RaiPolicyManager:
             ]
         )
 
-        # Add protected material filters for both text and code
+        # Add protected material filters for text 
         content_filters.extend(
             [
                 RaiPolicyContentFilter(
@@ -212,24 +212,6 @@ class RaiPolicyManager:
                     ]
                     == "Block",
                     enabled=config["guardrails"]["controls"]["protected_materials"]["text"],
-                ),
-                RaiPolicyContentFilter(
-                    name="Protected Material Code",
-                    source=RaiPolicyContentSource.PROMPT,
-                    blocking=config["guardrails"]["controls"]["protected_materials"][
-                        "action"
-                    ]
-                    == "Block",
-                    enabled=config["guardrails"]["controls"]["protected_materials"]["code"],
-                ),
-                RaiPolicyContentFilter(
-                    name="Protected Material Code",
-                    source=RaiPolicyContentSource.COMPLETION,
-                    blocking=config["guardrails"]["controls"]["protected_materials"][
-                        "action"
-                    ]
-                    == "Block",
-                    enabled=config["guardrails"]["controls"]["protected_materials"]["code"],
                 ),
             ]
         )

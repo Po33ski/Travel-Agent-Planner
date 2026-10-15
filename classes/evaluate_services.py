@@ -4,7 +4,18 @@ from datetime import datetime
 from pathlib import Path
 
 import yaml
-from agent_framework import AgentMiddleware, add_usage_details, evaluate_agent, evaluate_workflow
+from agent_framework import (
+    AgentExecutor,
+    AgentExecutorResponse,
+    AgentMiddleware,
+    EvalItem,
+    FunctionTool,
+    Message,
+    add_usage_details,
+    evaluate_agent,
+    evaluate_workflow,
+    normalize_tools,
+)
 from agent_framework.foundry import FoundryEvals
 
 from utils.utils import add_todays_date
@@ -27,6 +38,22 @@ TOOL_CALL_NAME_ATTRIBUTES = {
     "mcp_server_tool_call": "tool_name",
     "search_tool_call": "tool_name",
 }
+
+# Contents of an agent response that hold what a tool returned, and the attribute that holds it.
+# Web search results are not included: they carry links, not the text of the pages.
+TOOL_OUTPUT_ATTRIBUTES = {
+    "function_result": "result",
+    "mcp_server_tool_result": "output",
+}
+
+# Characters of the judge's reason printed for a failed evaluator
+JUDGE_REASON_CHARS = 300
+
+# Typographic quotes and apostrophes replaced by plain ones before an exact answer is compared
+PLAIN_QUOTES = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"'})
+
+# Context of an agent call whose tools returned nothing. groundedness needs a context in every item.
+NO_TOOL_OUTPUT = "The agent's tools returned no content."
 
 
 class TokenUsageMiddleware(AgentMiddleware):
@@ -173,17 +200,32 @@ class EvaluateService:
     async def evaluate_agents(self, workflow, workflow_result, eval_name):
         """Score every specialist agent of the workflow separately: the steps that led to the final answer.
 
-        The result holds one entry per agent under "agents". Tool evaluators are skipped
-        for agents without function tools.
+        Each agent is scored with its own evaluators from agent_evaluators; every call of the
+        agent is one item. evaluate_workflow applies one set of evaluators to all agents and
+        does not pass a context, so the items are built here from the workflow events.
+        The result holds one entry per agent under "agents".
         """
-        results = await evaluate_workflow(
-            workflow=workflow,
-            workflow_result=workflow_result,
-            evaluators=self._foundry_evals(self.agent_evaluators),
-            eval_name=eval_name,
-            include_overall=False,
-        )
-        return self._results_to_dict(results[0])
+        items_by_agent = {}
+        for event in workflow_result:
+            if event.type != "executor_completed":
+                continue
+            # The manager is not a workflow executor; the specialists run in agent executors
+            executor = workflow.executors.get(event.executor_id)
+            if not isinstance(executor, AgentExecutor):
+                continue
+
+            responses = event.data if isinstance(event.data, list) else [event.data]
+            for response in responses:
+                if not isinstance(response, AgentExecutorResponse):
+                    continue
+                # The instruction the agent received: the user messages of its conversation
+                query_messages = [m for m in response.full_conversation if m.role == "user"]
+                item = self._agent_item(
+                    query_messages or response.full_conversation, response.agent_response, executor.agent
+                )
+                items_by_agent.setdefault(event.executor_id, []).append(item)
+
+        return await self._evaluate_agent_items(items_by_agent, eval_name)
 
     # ------------------------------------------------------------------ single agent evaluation
     async def evaluate_agent_final_answer(self, agent, query, response, eval_name):
@@ -204,16 +246,36 @@ class EvaluateService:
     async def evaluate_agent_work(self, agent, query, response, eval_name):
         """Score how the single agent worked, its function tool calls included.
 
-        Counterpart of evaluate_agents for a workflow, with the same evaluators.
+        Counterpart of evaluate_agents for a workflow: the agent's evaluators come from
+        agent_evaluators and the result has the same format.
         """
-        results = await evaluate_agent(
-            agent=agent,
-            queries=query,
-            responses=response,
-            evaluators=self._foundry_evals(self.agent_evaluators),
-            eval_name=eval_name,
-        )
-        return self._results_to_dict(results[0])
+        item = self._agent_item([Message("user", [query])], response, agent)
+        return await self._evaluate_agent_items({agent.name: [item]}, eval_name)
+
+    async def _evaluate_agent_items(self, items_by_agent, eval_name):
+        """Score the items of every agent with the agent's evaluators; one Foundry evaluation run per agent.
+
+        Agents without evaluators in agent_evaluators are skipped. A failed evaluation of one
+        agent is recorded under its name and does not stop the others.
+        """
+        agents = {}
+        for agent_name, items in items_by_agent.items():
+            evaluators = self.agent_evaluators.get(agent_name)
+            if not evaluators:
+                continue
+            agents[agent_name] = await self._run_evaluation(
+                self._evaluate_items(items, evaluators, f"{eval_name} - {agent_name}")
+            )
+
+        if not agents:
+            return self._skipped_evaluation()
+        completed = all(results["status"] == "completed" for results in agents.values())
+        return {"status": "completed" if completed else "partial", "error": None, "items": [], "agents": agents}
+
+    async def _evaluate_items(self, items, evaluators, eval_name):
+        """Run one Foundry evaluation of the items; tool evaluators are dropped for items without function tools."""
+        results = await self._foundry_evals(evaluators).evaluate(items, eval_name=eval_name)
+        return self._results_to_dict(results)
 
     # ------------------------------------------------------------------ rule checks
     def check_final_answer(self, final_answer, test_case, called_agents=None, called_tools=None):
@@ -243,7 +305,9 @@ class EvaluateService:
 
         if "expected_answer" in test_case:
             expected_answer = test_case["expected_answer"]
-            add_check("expected_answer", expected_answer in final_answer, f"expected: {expected_answer}")
+            # Models often write typographic quotes ("I’m"), which must not fail an otherwise exact answer
+            found = expected_answer.translate(PLAIN_QUOTES) in final_answer.translate(PLAIN_QUOTES)
+            add_check("expected_answer", found, f"expected: {expected_answer}")
 
         if called_agents is not None and "expected_agents" in test_case:
             not_called = [a for a in test_case["expected_agents"] if a not in called_agents]
@@ -305,14 +369,10 @@ class EvaluateService:
         else:
             record["final_answer_evaluation"] = self._skipped_evaluation()
         if self.agent_evaluation_enabled:
-            # The manager is not a workflow executor; without a specialist call (e.g. a refused
-            # request) there is nothing to evaluate per agent
-            if any(agent_name in workflow.executors for agent_name in called_agents):
-                record["agent_evaluation"] = await self._run_evaluation(
-                    self.evaluate_agents(workflow, workflow_result, eval_name)
-                )
-            else:
-                record["agent_evaluation"] = self._skipped_evaluation()
+            # Without a specialist call (e.g. a refused request) the evaluation is skipped
+            record["agent_evaluation"] = await self._run_evaluation(
+                self.evaluate_agents(workflow, workflow_result, eval_name)
+            )
 
         return record
 
@@ -352,15 +412,9 @@ class EvaluateService:
         else:
             record["final_answer_evaluation"] = self._skipped_evaluation()
         if self.agent_evaluation_enabled:
-            results = await self._run_evaluation(
-                self.evaluate_agent_work(agent, task, response, f"{eval_name} - agent")
+            record["agent_evaluation"] = await self._run_evaluation(
+                self.evaluate_agent_work(agent, task, response, eval_name)
             )
-            record["agent_evaluation"] = {
-                "status": results["status"],
-                "error": results["error"],
-                "items": [],
-                "agents": {agent.name: results},
-            }
 
         return record
 
@@ -456,11 +510,9 @@ class EvaluateService:
         for check in record["rule_checks"]:
             print(f"[EVAL] {'✅' if check['passed'] else '❌'} {check['name']}: {check['details']}")
 
-        final_answer_evaluation = record["final_answer_evaluation"]
-        print(
-            f"[EVAL] Final answer (LLM judge): {final_answer_evaluation['status']}, "
-            f"{final_answer_evaluation.get('passed', 0)} passed, {final_answer_evaluation.get('failed', 0)} failed"
-        )
+        self._print_evaluation("Final answer (LLM judge)", record["final_answer_evaluation"])
+        for agent_name, results in record.get("agent_evaluation", {}).get("agents", {}).items():
+            self._print_evaluation(f"Agent {agent_name} (LLM judge)", results)
 
     def print_summary(self, summary):
         """Print the summary of a report to the console."""
@@ -511,6 +563,46 @@ class EvaluateService:
             ],
             "agents": {name: self._results_to_dict(sub) for name, sub in results.sub_results.items()},
         }
+
+    @classmethod
+    def _agent_item(cls, query_messages, response, agent):
+        """Build the evaluation item of one agent call.
+
+        The item holds the instruction, the agent's reply with its function tool calls and
+        results, the agent's function tools (for the tool evaluators) and, as context, the text
+        of everything its tools returned (for groundedness). FoundryEvals does not pass MCP
+        results such as knowledge base passages to the judge, so they reach it only as context.
+        """
+        tools = normalize_tools(getattr(agent, "default_options", {}).get("tools", []))
+        function_tools = [tool for tool in tools if isinstance(tool, FunctionTool)]
+
+        tool_outputs = [
+            cls._as_text(getattr(content, attribute))
+            for message in response.messages
+            for content in message.contents
+            if (attribute := TOOL_OUTPUT_ATTRIBUTES.get(content.type))
+        ]
+        context = "\n\n".join(output for output in tool_outputs if output)
+
+        return EvalItem(
+            conversation=[*query_messages, *response.messages],
+            tools=function_tools or None,
+            context=context or NO_TOOL_OUTPUT,
+        )
+
+    @classmethod
+    def _as_text(cls, value):
+        """Return a tool output as text: a string, a list of text contents or a JSON-like value."""
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            return "\n".join(cls._as_text(item) for item in value)
+        text = getattr(value, "text", None)
+        if text is not None:
+            return text
+        return json.dumps(value, ensure_ascii=False, default=str)
 
     @staticmethod
     def _skipped_evaluation():
@@ -603,6 +695,45 @@ class EvaluateService:
             for key, value in entry.items():
                 total[key] = total.get(key, 0) + value
         return total
+
+    @classmethod
+    def _print_evaluation(cls, title, evaluation):
+        """Print one evaluation: the score of every evaluator, and the judge's reason for a failed one.
+
+        An agent called several times has one item per call, so its evaluators are listed once per call.
+        """
+        if evaluation["status"] != "completed":
+            error = f": {evaluation['error']}" if evaluation.get("error") else ""
+            print(f"[EVAL] {title}: {evaluation['status']}{error}")
+            return
+
+        print(f"[EVAL] {title}:")
+        for item in evaluation["items"]:
+            if item["error"]:
+                print(f"[EVAL]   ⚠️ item error: {item['error']}")
+            for score in item["scores"]:
+                mark = {True: "✅", False: "❌"}.get(score["passed"], "➖")
+                line = f"[EVAL]   {mark} {score['name']}: {score['score']}"
+                reason = cls._judge_reason(score["details"]) if score["passed"] is False else ""
+                print(f"{line} - {reason[:JUDGE_REASON_CHARS]}" if reason else line)
+
+    @staticmethod
+    def _judge_reason(details):
+        """Return the judge's reason from the raw evaluator output, '' when it has none.
+
+        The judge answers with a JSON object that holds the reason; tool evaluators may return no details.
+        """
+        if not isinstance(details, dict):
+            return ""
+        for output in details.get("output") or []:
+            content = output.get("content") if isinstance(output, dict) else None
+            try:
+                parsed = json.loads(content)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(parsed, dict) and parsed.get("reason"):
+                return str(parsed["reason"])
+        return ""
 
     @staticmethod
     def _print_metrics(title, metrics):
