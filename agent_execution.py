@@ -1,4 +1,5 @@
 import os
+import re
 import asyncio
 import logging
 from azure.identity import DefaultAzureCredential
@@ -16,6 +17,7 @@ from classes.speech_services import text_to_speech
 from classes.secret_manager_services import SecretManager
 from classes.cosmos_memory_services import CosmosMemory
 from classes.azure_nlp_services import AzureNLPService
+from classes.travel_history_provider import TravelHistoryProvider
 from utils.agent_middleware import (
     BlockedReplyMonitor,
     drop_foreign_tool_contents,
@@ -39,6 +41,9 @@ FINE_TUNING_SYSTEM_PROMPT = (
     "web search, weather forecasts and hotel search, and you never invent facts."
 )
 
+# Demo check only: something@domain.tld
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
 # =============================================================================
 # AGENT INITIALIZATION
 # =============================================================================
@@ -52,6 +57,7 @@ region = os.getenv("REGION")
 user_role = os.getenv("USER_ROLE")
 with open("config.yaml", "r") as file:
     config = yaml.safe_load(file)
+memory_config = config["memory"]
 # =============================================================================
 # AUTHENTICATION
 # =============================================================================
@@ -96,15 +102,17 @@ cosmos_memory = CosmosMemory(
 blocked_reply_monitor = BlockedReplyMonitor()
 
 
-def create_agents():
+def create_agents(travel_history: TravelHistoryProvider):
     # 1. Wrap the pre-deployed Foundry project agents.
     # agent_name must match agent_name in agents/*_config.yaml and the Team section of the manager prompt.
     # drop_foreign_tool_contents: the agents get each other's text answers, not the raw tool calls.
+    # Only the manager gets the user's travel history; it passes what matters to the specialists.
     manager_agent = FoundryAgent(
         project_endpoint=endpoint,
         agent_name="managerAgent",
         credential=credential,
         middleware=[drop_foreign_tool_contents, blocked_reply_monitor, log_manager_decisions],
+        context_providers=[travel_history],
     )
 
     # The manager picks the next agent from these descriptions
@@ -184,6 +192,39 @@ def save_response_and_preferences(user_id: str, user_text: str, assistant_text: 
     cosmos_memory.add_conversation(user_id, record, preferences)
 
 
+def propose_trip_memory(
+    user_id: str, user_text: str, assistant_text: str, travel_history: TravelHistoryProvider
+) -> None:
+    """Summarise the trip and extract keywords from the request; save both only when the user accepts.
+
+    The summary covers the request and the answer, the keywords only the request, so they describe
+    what the user asked for and not every place the team suggested.
+    """
+    language = nlp_service.detect_language(user_text)
+    summary = nlp_service.summarize(
+        f"{user_text}\n\n{assistant_text}", language, memory_config["summary_sentence_count"]
+    )
+    keywords = nlp_service.extract_key_phrases(user_text, language)[: memory_config["max_keywords_per_answer"]]
+    if not summary and not keywords:
+        return
+
+    print("\n" + "=" * 50)
+    print("TRAVEL HISTORY:")
+    print(f"Summary: {summary or '(none)'}")
+    print(f"Keywords: {', '.join(keywords) or '(none)'}")
+    print("=" * 50)
+    try:
+        answer = input("Save them to your profile for your next trips? [y/N]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    if answer not in ("y", "yes", "t", "tak"):
+        print("[LONG-TERM] Not saved.")
+        return
+
+    if cosmos_memory.add_trip_memory(user_id, summary, keywords):
+        travel_history.refresh()
+
+
 def ask_user_name() -> str | None:
     """Ask for the user name until a non-empty one is given; None when the user quits."""
     while True:
@@ -196,9 +237,24 @@ def ask_user_name() -> str | None:
         print("The user name is required.")
 
 
+def ask_user_email(stored_email: str | None) -> str | None:
+    """Ask for the e-mail address until a valid one is given; Enter keeps the stored one. None when the user quits."""
+    prompt = f"E-mail [{stored_email}]: " if stored_email else "E-mail: "
+    while True:
+        try:
+            email = input(prompt).strip()
+        except (EOFError, KeyboardInterrupt):
+            return None
+        if not email and stored_email:
+            return stored_email
+        if EMAIL_PATTERN.match(email):
+            return email
+        print("A valid e-mail address is required.")
+
+
 # Microsoft Agent Frame is built entirely on async programming.
 # agent.run() is an async method, so you need to run it in an async context.
-async def run_workflow(manager_agent, participants, user_id: str):
+async def run_workflow(manager_agent, participants, user_id: str, travel_history: TravelHistoryProvider):
     print("Interactive workflow-agent mode started. Type 'exit' or 'quit' to stop.\n")
 
     while True:
@@ -251,6 +307,8 @@ async def run_workflow(manager_agent, participants, user_id: str):
             print(f"\n[SPEECH] {str(speech_result)}")
             print("=" * 50)
 
+            propose_trip_memory(user_id, user_message_text, final_text, travel_history)
+
         except ChatClientContentFilterException as e:
             # The RAI policy blocked the input of the manager or of one of the specialists
             checks = getattr(e, "content_filter_result", None) or {}
@@ -273,8 +331,19 @@ def main() -> int:
     try:
         # Known name: the stored user id; first visit: a new id and profile
         user_id = cosmos_memory.get_or_create_user(user_name, user_role)
-        manager_agent, participants = create_agents()
-        asyncio.run(run_workflow(manager_agent, participants, user_id))
+
+        # The e-mail address is only stored in the profile; the agents never see it
+        stored_email = (cosmos_memory.get_user_profile(user_id) or {}).get("email_address")
+        email = ask_user_email(stored_email)
+        if email is None:
+            print("\nExiting.")
+            return 1
+        if email != stored_email:
+            cosmos_memory.update_preference(user_id, "email_address", email)
+
+        travel_history = TravelHistoryProvider(cosmos_memory, user_id)
+        manager_agent, participants = create_agents(travel_history)
+        asyncio.run(run_workflow(manager_agent, participants, user_id, travel_history))
         return 0
     except Exception as e:
         print(f"\n❌ Execution failed: {str(e)}")

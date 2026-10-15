@@ -18,7 +18,7 @@ The team uses **two LLMs**: `gpt-5.6-luna` for the manager, which does the plann
 
 A typical answer includes a weather summary for the travel dates, a day-by-day plan based on the travel guide, hotel suggestions with ratings, the reasons why they match the user's preferences and links (when the user asks about accommodation), and transport and practical tips. The final answer is also read out with **Azure AI Speech** and saved as an audio file.
 
-Every user signs in with a name. Their profile, preferences and conversation history (in a chat fine-tuning format) are kept in **Azure Cosmos DB**, and **Azure AI Language** detects the language of each question and stores it as a preference. All endpoints, resource names and keys live in **Azure Key Vault**, so the only setting a script needs is the Key Vault URL.
+Every user signs in with a name and an e-mail address. Their profile, preferences, travel history and conversation history (in a chat fine-tuning format) are kept in **Azure Cosmos DB**. **Azure AI Language** detects the language of each question and stores it as a preference, and after every answer it summarises the trip and extracts keywords, which are saved only when the user accepts. The manager gets this short travel history as context in the next conversations. All endpoints, resource names and keys live in **Azure Key Vault**, so the only setting a script needs is the Key Vault URL.
 
 ![Travel Agent Planner architecture](docs/architecture.svg)
 
@@ -37,7 +37,7 @@ The chat does not use `travelAgent`. It exists so that the [evaluation](#evaluat
 3. [Infrastructure: `resource_deployment.bicep`](#infrastructure-resource_deploymentbicep)
 4. [The agents](#the-agents)
 5. [Tools](#tools)
-6. [User memory and language detection](#user-memory-and-language-detection)
+6. [User memory, language detection and travel history](#user-memory-language-detection-and-travel-history)
 7. [Evaluation](#evaluation)
 8. [Guardrail configuration: `StrictGuardrail`](#guardrail-configuration-strictguardrail)
 9. [Clean-up](#clean-up)
@@ -52,15 +52,16 @@ The chat does not use `travelAgent`. It exists so that the [evaluation](#evaluat
 | `rag_setup.py` | Uploads the travel guide and builds the Foundry IQ knowledge source and knowledge base |
 | `agents/<agent>_deployment.py` | One script per agent. Creates or updates the RAI policy and the server-side agent (system prompt and tools) |
 | `agents/<agent>_config.yaml` | One file per agent: agent name and system prompt |
-| `agent_execution.py` | Interactive command-line chat. Asks for the user name, builds the Magentic workflow, runs the weather and hotel search tools locally, saves the conversation and preferences to Cosmos DB and converts the final answer to speech |
+| `agent_execution.py` | Interactive command-line chat. Asks for the user name and e-mail address, builds the Magentic workflow, runs the weather and hotel search tools locally, saves the conversation and preferences to Cosmos DB, converts the final answer to speech and offers to save a trip summary and keywords |
 | `magentic_exe_and_eval.py` | Runs the test prompts through the Magentic workflow, evaluates every run and saves the report in `outputs/` |
 | `single_agent_exe_and_eval.py` | The same evaluation for the single agent `travelAgent` |
 | `agents/single_agent/` | Deployment script and config file (agent name and system prompt) of the single agent `travelAgent` |
-| `config.yaml` | Guardrail (RAI) settings shared by all agents, profile TTL for Cosmos DB, the NLP sentiment threshold and the evaluation settings |
+| `config.yaml` | Guardrail (RAI) settings shared by all agents, profile TTL for Cosmos DB, the travel history limits, the NLP sentiment threshold and the evaluation settings |
 | `classes/evaluate_services.py` | `EvaluateService`: Foundry evaluators for the final answer and for every agent, rule checks, token counting and the report, for a workflow or a single agent. `TokenUsageMiddleware`: records the token usage of every agent call |
 | `classes/secret_manager_services.py` | `SecretManager`: reads secrets from Key Vault and caches them in memory |
-| `classes/cosmos_memory_services.py` | `CosmosMemory`: user profiles, preferences and conversation history in Cosmos DB |
-| `classes/azure_nlp_services.py` | `AzureNLPService`: language detection and other Azure AI Language features |
+| `classes/cosmos_memory_services.py` | `CosmosMemory`: user profiles, preferences, travel history and conversation history in Cosmos DB |
+| `classes/travel_history_provider.py` | `TravelHistoryProvider`: Agent Framework context provider that gives the manager the user's saved travel history |
+| `classes/azure_nlp_services.py` | `AzureNLPService`: language detection, summarization, key phrases and other Azure AI Language features |
 | `classes/foundry_iq_services.py` | `FoundryIQService`: blob upload, knowledge source, ingestion, knowledge base, MCP tool |
 | `classes/weather_services.py` | `WeatherService` and the `get_forecast_weather` / `get_current_weather` tools |
 | `classes/google_services.py` | `GooglePlacesService` (Google Maps Places API) and the `search_hotels_google_maps` tool |
@@ -215,11 +216,13 @@ python agents/single_agent/travel_agent_deployment.py
 python agent_execution.py
 ```
 
-The chat first asks for your **user name** and does not start the agents until you give one. A known name loads your existing profile, and a new name creates one (see [User memory and language detection](#user-memory-and-language-detection)).
+The chat first asks for your **user name** and then for your **e-mail address**, and does not start the agents until you give both. A known name loads your existing profile, and a new name creates one. A returning user can press Enter to keep the stored e-mail address (see [User memory, language detection and travel history](#user-memory-language-detection-and-travel-history)).
+
+After every answer the chat shows a short summary of the trip and keywords from your question and asks `Save them to your profile for your next trips? [y/N]`. Only what you accept is saved and given to the manager in later conversations.
 
 Type your questions at the `You:` prompt. Type `exit` or `quit`, or press `Ctrl+C`, to end the session. The console shows what the team is doing in `[TOOL]`, `[MANAGER]` and `[AGENT]` lines (see [Orchestration](#orchestration-agent_executionpy)).
 
-Each message is handled as a separate task and **the team does not remember earlier messages**, so put everything the team needs (destination, dates, budget, interests) in one message. An answer takes longer than with a single agent, because the manager and the specialists make several model calls per message.
+Each message is handled as a separate task and **the team does not remember earlier messages** (only the saved travel history), so put everything the team needs (destination, dates, budget, interests) in one message. An answer takes longer than with a single agent, because the manager and the specialists make several model calls per message.
 
 Example prompt:
 
@@ -305,17 +308,17 @@ To use another region, change `--location` in `az group create`. Existing resour
 | **Storage account + blob container** | `StorageV2`, `Standard_LRS`, TLS 1.2, no public blob access. Shared-key access is enabled because the Search indexer reads the container with the account key. |
 | **Knowledge base connection** (`RemoteTool`, `CustomKeys`) | Project connection pointing at the knowledge base MCP endpoint (`.../knowledgebases/<kb>/mcp`). It stores the read-only Search **query key**, which is read from the search service at deployment time, so the key never appears in code or outputs. It can be created before the knowledge base exists. |
 | **Azure AI Speech** (kind `SpeechServices`, SKU `F0`) | Free tier, custom subdomain, key auth. Converts the final answer to speech. |
-| **Azure AI Language** (kind `TextAnalytics`, SKU `F0`) | Free tier, custom subdomain, key auth. Detects the language of the user's questions. |
+| **Azure AI Language** (kind `TextAnalytics`, SKU `F0`) | Free tier, custom subdomain, key auth. Detects the language of the user's questions, summarises each trip and extracts its keywords. |
 | **Azure Cosmos DB** (NoSQL API) | Free tier, `Session` consistency, single region. The database has 1,000 RU/s of shared throughput (covered by the free tier). The container is partitioned by `/userId`, has a default TTL of 90 days and a composite index on `userId` and `last_updated`. |
 | **Azure Key Vault** | `standard` SKU, Azure RBAC authorization, soft delete for 7 days. Purge protection is off so that the vault name can be reused after a clean-up; it is commented out in the template and should be enabled in production. Holds all settings and keys (see below). |
 
 ### Key Vault secrets
 
-The template writes **27 secrets**. A secret name is the setting name with `-` instead of `_`, because Key Vault names can't contain underscores (for example `PROJECT_ENDPOINT` → `PROJECT-ENDPOINT`). Keys are read from the resources during the deployment (`listKeys()`), so they never appear in code, outputs or the deployment history.
+The template writes **26 secrets**. A secret name is the setting name with `-` instead of `_`, because Key Vault names can't contain underscores (for example `PROJECT_ENDPOINT` → `PROJECT-ENDPOINT`). Keys are read from the resources during the deployment (`listKeys()`), so they never appear in code, outputs or the deployment history.
 
 | Group | Secrets | Read by |
 |---|---|---|
-| Foundry | `PROJECT-ENDPOINT` | agent deployment scripts, `agent_execution.py` |
+| Foundry | `PROJECT-ENDPOINT` | agent deployment scripts, `agent_execution.py`, both evaluation scripts |
 | | `LLM-MODEL-DEPLOYMENT-NAME`, `LLM-MINI-MODEL-DEPLOYMENT-NAME` | agent deployment scripts (`rag_setup.py` also reads the mini model) |
 | | `LLM-TERRA-MODEL-DEPLOYMENT-NAME` | not read by any script yet |
 | | `AOAI-ENDPOINT`, `EMBEDDING-MODEL-DEPLOYMENT-NAME` | `rag_setup.py` |
@@ -376,14 +379,14 @@ The manager script takes its model from the `LLM-MODEL-DEPLOYMENT-NAME` secret. 
 
 The orchestration runs **on the client**. The agents never call each other. The local Magentic workflow (`MagenticBuilder` from Microsoft Agent Framework) calls each server-side agent through a `FoundryAgent` client.
 
-Before the first message, the chat asks for the user name and loads or creates the user's profile in Cosmos DB. For every user message the workflow then does the following:
+Before the first message, the chat asks for the user name, loads or creates the user's profile in Cosmos DB, asks for the e-mail address and reads the user's saved travel history. For every user message the workflow then does the following:
 
 1. **Plan.** The manager collects the known facts and writes a plan for the team.
 2. **Check progress.** At the start of each round the manager answers: is the request satisfied, is progress being made, which agent goes next and with what instruction.
 3. **Delegate.** The chosen specialist runs with that instruction. Its reply is shared with the other agents.
 4. **Answer.** When the manager judges the request satisfied, it writes the final answer from the collected results.
 
-After the answer is printed, `save_response_and_preferences()` stores the question and answer in the user's conversation history and saves the detected language, and `text_to_speech()` reads the answer out. Both steps are skipped when the final answer was refused or blocked (see **Refused or blocked answers** below).
+After the answer is printed, `save_response_and_preferences()` stores the question and answer in the user's conversation history and saves the detected language, `text_to_speech()` reads the answer out, and `propose_trip_memory()` offers to save a trip summary and keywords (see [Travel history](#travel-history)). All three steps are skipped when the final answer was refused or blocked (see **Refused or blocked answers** below).
 
 Details worth knowing:
 
@@ -391,7 +394,7 @@ Details worth knowing:
 - **Function tools run locally.** `weatherAgent` and `hotelAgent` get the Python implementations of their tools. When the server-side agent requests a function call, `FoundryAgent` runs the local function and sends the result back. The MCP knowledge base and web search tools run entirely server-side.
 - **Limits.** `max_round_count=20`: one round is one progress check plus one agent turn, and a workflow that reaches the limit ends *without* a final answer. `max_stall_count=3`: after more than three rounds without progress the manager resets the team and replans. A reset clears the shared conversation, so the manager starts again from the first agent and asks for data it already had; the round count is not reset. `max_reset_count=2`: at the second reset the workflow terminates, also *without* a final answer, instead of repeating the same rounds up to the round limit.
 - **Today's date.** The agents do not know the current date, so `add_todays_date` (`utils/utils.py`) puts the line `Today's date: YYYY-MM-DD (weekday)` in front of every message. The manager uses it to turn "next week" into dates and to tell whether a trip is within the 15 days of the weather forecast. The conversation history keeps the message as the user wrote it.
-- **No memory between messages.** A Magentic workflow handles exactly one task and accepts a single task message, so a new workflow is built for every user message. The conversation history in Cosmos DB is a record for fine-tuning; it isn't passed back to the agents.
+- **No memory between messages.** A Magentic workflow handles exactly one task and accepts a single task message, so a new workflow is built for every user message. The conversation history in Cosmos DB is a record for fine-tuning; it isn't passed back to the agents. Only the short travel history the user accepted reaches the manager, through `TravelHistoryProvider` (see [Travel history](#travel-history)).
 - **Agents share text answers only.** Magentic passes every agent's reply to the other agents, including the function call and its raw result. An agent that already has a server-side conversation would then send a tool result without the matching call, and the service rejects it with *"No tool call found for function call output"*. The `drop_foreign_tool_contents` middleware (`utils/agent_middleware.py`) on every agent removes these tool contents from the incoming messages. This also keeps raw tool output out of the other agents' context.
 - **Refused or blocked answers.** A reply that the model refuses, or that the content filter cuts off on the output side, arrives without an error: the text ends early and a refusal such as *"I'm sorry, but I cannot assist with that request."* takes its place. `BlockedReplyMonitor` (`utils/agent_middleware.py`) on every agent detects this and prints `[GUARDRAIL]` lines with the refusal, the finish reason, the response status and any content filter results the service reported. No filter results usually means the model refused on its own. A blocked *input* is different: it raises `ChatClientContentFilterException`, which the chat reports as *"blocked by the content safety policy"*.
 - **Console log.** `log_tool_calls` prints every local function call and a truncated result as `[TOOL] -> ...` / `[TOOL] <- ...`. `log_manager_decisions` prints the manager's decision at the start of every round as `[MANAGER] ...`: the next agent, the reason and the instruction, or that the request is satisfied. `log_agent_replies` prints what each specialist sent back as `[AGENT] <name> replied: ...`, truncated to 1,500 characters. All three are in `utils/agent_middleware.py`.
@@ -525,11 +528,13 @@ Two things are defined in more than one place:
 
 ---
 
-## User memory and language detection
+## User memory, language detection and travel history
 
-### Signing in with a user name
+### Signing in with a user name and e-mail address
 
 `CosmosMemory.get_or_create_user()` looks up the profile whose `userName` matches the given name (case-insensitive). A returning user gets their stored user id. On first use a new id (UUID) is generated and a profile with default preferences is created.
+
+The chat then asks for the e-mail address (`ask_user_email()`) until it gets one that passes a simple `name@domain.tld` check. A returning user sees the stored address in the prompt and keeps it with Enter. A new or changed address is saved with `CosmosMemory.update_preference()`.
 
 This is a demo shortcut: the name alone identifies the user, so two people with the same name share a profile. In production the user id would be the object ID (`oid` claim) of a user signed in with Microsoft Entra ID.
 
@@ -546,8 +551,12 @@ There is one document per user. Its `id` and the partition key `/userId` are bot
   "preferences": {
     "language": "Polish",
     "language_preference": "professional",
-    "email_address": null
+    "email_address": "anna@example.com",
+    "travel_keywords": ["muzea", "cichy hotel", "Lizbona"]
   },
+  "trip_history": [
+    { "date": "2026-10-15", "summary": "<a summary of the trip in two sentences>" }
+  ],
   "conversation_history": [
     {
       "messages": [
@@ -563,9 +572,11 @@ There is one document per user. Its `id` and the partition key `/userId` are bot
 ```
 
 - **`conversation_history`** collects one record per answered question in the chat fine-tuning format: a short system prompt (`FINE_TUNING_SYSTEM_PROMPT`), the user's question and the workflow's final answer. The short system prompt stands in for the agents' full prompts, so a fine-tuned model learns the rules from the examples.
-- **`preferences.language`** is the name of the language of the user's last recognised question. The default is `English`.
+- **`preferences.language`** is the name of the language of the user's last recognised question. The default is `English`. It is only stored; the agents take the answer language from the current question.
+- **`preferences.email_address`** is asked for at start-up (a simple `name@domain.tld` check) and only stored. It is never passed to the agents.
+- **`trip_history`** and **`preferences.travel_keywords`** hold the trip summaries and keywords the user accepted (see [Travel history](#travel-history)).
 - **TTL.** The profile is deleted 90 days after its last change (`cosmos.profile_ttl_seconds` in `config.yaml`). Every write restarts the countdown, so only inactive profiles expire, together with their conversation history.
-- A Cosmos DB document can be up to 2 MB, which is enough for a few hundred long answers per user.
+- A Cosmos DB document can be up to 2 MB, which is enough for a few hundred long answers per user. `trip_history` and `travel_keywords` are capped (see [Travel history](#travel-history)); `conversation_history` is not.
 
 ### Language detection
 
@@ -573,7 +584,33 @@ After every answer, `save_response_and_preferences()` calls `AzureNLPService.ext
 
 If the language can't be recognised (very short text such as *"ok"* returns `(Unknown)`) or the service call fails, the preference is left out and the stored value stays unchanged.
 
-`extract_preferences()` is the place to add further preferences learned from the user's messages. `AzureNLPService` already has methods for PII redaction, named entity recognition, key phrase extraction and sentiment analysis (with the escalation threshold from `nlp.sentiment_analysis` in `config.yaml`); they are not used by the chat yet. The stored preferences aren't passed to the agents yet either.
+`extract_preferences()` is the place to add further preferences learned from the user's messages. `AzureNLPService` also has methods for PII redaction, named entity recognition and sentiment analysis (with the escalation threshold from `nlp.sentiment_analysis` in `config.yaml`); the chat does not use them yet. The stored preferences (language, e-mail address) are not passed to the agents.
+
+### Travel history
+
+The manager gets a short note on the user's earlier trips, so a returning user does not have to repeat their interests. The note holds only what the user accepted, and is kept short so that it adds few tokens.
+
+**Saving (after every answer, `propose_trip_memory()` in `agent_execution.py`).** After the answer was read out:
+
+1. `AzureNLPService.summarize()` summarises the question and the answer in about `memory.summary_sentence_count` sentences. It uses Azure AI Language abstractive summarization; when that fails (it is not available in every region and language), it falls back to extractive summarization, which picks the most important sentences.
+2. `extract_key_phrases()` takes up to `memory.max_keywords_per_answer` key phrases from the **question only**, so they describe what the user asked for and not every place the team suggested. Both calls use the language detected in the question.
+3. The chat shows the summary and the keywords and asks `Save them to your profile for your next trips? [y/N]`. Only `y` (or `yes`, `t`, `tak`) saves them; anything else discards them.
+4. `CosmosMemory.add_trip_memory()` appends the summary with today's date to `trip_history` and merges the keywords into `preferences.travel_keywords`. A keyword that is already stored (case-insensitive) moves to the newest position. Only the newest `memory.max_trip_summaries` summaries and `memory.max_travel_keywords` keywords are kept.
+
+**Context (`classes/travel_history_provider.py`).** `TravelHistoryProvider` is a Microsoft Agent Framework `ContextProvider`. It reads the travel history from Cosmos DB at start-up and again after every save, and in `before_run` adds it as one message in front of the manager's input:
+
+```text
+Travel history of this user:
+- 2026-10-15: <summary>
+Travel keywords: muzea, cichy hotel, Lizbona
+```
+
+The manager's system prompt (section *Travel history*) says that this message comes from the system, is not part of the request, and is used only to personalise the current request, which always wins. Users without saved trips get no message. Design decisions:
+
+- **Only the manager gets it.** It passes what matters (for example hotel wishes) to the specialists in its instructions, so the note does not cost tokens in every specialist call. Magentic calls the manager several times per task (plan, every progress check, final answer), and the note is sent with each call.
+- **A user message, not instructions.** The Agent Framework memory sample uses `extend_instructions`, but the system prompt of a Foundry agent belongs to the server-side agent version: `FoundryAgent` drops system messages, and provider instructions would be sent as an extra `instructions` field next to the agent reference, which is not documented for Foundry agents.
+- **Not on the workflow agent.** `workflow.as_agent(context_providers=...)` would add a second input message, and Magentic accepts exactly one task message.
+- **Only the chat uses it.** The evaluation scripts have no user profile and no travel history.
 
 ---
 

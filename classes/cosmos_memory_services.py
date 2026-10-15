@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from azure.cosmos import exceptions
 
@@ -7,8 +7,8 @@ from azure.cosmos import exceptions
 class CosmosMemory:
     """
     Long-term user memory using Azure Cosmos DB.
-    One document per user: name, role, preferences and conversation_history
-    (fine-tuning examples) across sessions.
+    One document per user: name, role, preferences, trip_history (the trip summaries the
+    user agreed to save) and conversation_history (fine-tuning examples) across sessions.
     """
 
     def __init__(
@@ -22,6 +22,8 @@ class CosmosMemory:
         self.database_client = database_client
         self.container_client = container_client
         self.ttl_seconds = config["cosmos"]["profile_ttl_seconds"]
+        self.max_travel_keywords = config["memory"]["max_travel_keywords"]
+        self.max_trip_summaries = config["memory"]["max_trip_summaries"]
 
     def get_or_create_user(self, user_name, user_role):
         """Return the id of the user with this name; on first use generate an id and create the profile.
@@ -108,12 +110,50 @@ class CosmosMemory:
             print(f"[LONG-TERM] Error saving conversation: {error}")
             return False
 
+    def get_trip_memory(self, user_id):
+        """Return the user's trip_history and preferences.travel_keywords; empty lists when there are none."""
+        try:
+            profile = self.container_client.read_item(item=user_id, partition_key=user_id)
+        except exceptions.CosmosResourceNotFoundError:
+            return [], []
+        except Exception as error:
+            print(f"[LONG-TERM] Error reading trip history: {error}")
+            return [], []
+        return profile.get("trip_history", []), profile.get("preferences", {}).get("travel_keywords", [])
+
+    def add_trip_memory(self, user_id, summary, keywords):
+        """Save a trip summary and merge the keywords into preferences.travel_keywords.
+
+        Call it only after the user accepted. Both lists keep only their newest entries
+        (memory.max_trip_summaries, memory.max_travel_keywords in config.yaml), so the
+        context given to the manager stays short. A keyword already stored (case-insensitive)
+        moves to the newest position instead of being added twice.
+        """
+        try:
+            profile = self._read_or_new_profile(user_id)
+            if summary:
+                trips = profile.setdefault("trip_history", [])
+                trips.append({"date": date.today().isoformat(), "summary": summary})
+                profile["trip_history"] = trips[-self.max_trip_summaries:]
+            if keywords:
+                preferences = profile.setdefault("preferences", {})
+                new_keys = {keyword.lower() for keyword in keywords}
+                kept = [k for k in preferences.get("travel_keywords", []) if k.lower() not in new_keys]
+                preferences["travel_keywords"] = (kept + list(keywords))[-self.max_travel_keywords:]
+            self._upsert_profile(profile)
+            print(f"[LONG-TERM] Saved trip history for user: {user_id}")
+            return True
+        except Exception as error:
+            print(f"[LONG-TERM] Error saving trip history: {error}")
+            return False
+
     def _new_profile(self, user_id):
         """Return a new profile document; the partition key (/userId) equals the document id."""
         return {
             "id": user_id,
             "userId": user_id,
             "preferences": self._get_default_preferences(),
+            "trip_history": [],
             "conversation_history": [],
         }
 
@@ -135,7 +175,8 @@ class CosmosMemory:
         return {
             "language": "English",  # language name, as saved by AzureNLPService.extract_preferences
             "language_preference": "professional",
-            "email_address": None,
+            "email_address": None,  # asked for at start-up in agent_execution.py
+            "travel_keywords": [],  # saved by add_trip_memory after the user accepted
         }
 
     def debug_container_contents(self):

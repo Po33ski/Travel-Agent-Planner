@@ -111,12 +111,13 @@ class AzureNLPService:
             print(f"[NLP] Entity extraction error: {error}")
             return text
 
-    def extract_key_phrases(self, text):
+    def extract_key_phrases(self, text, language=None):
+        """Return the key phrases of the text. language is an ISO 639-1 code; without it the service assumes English."""
         print("[NLP] Extracting key phrases...")
 
         try:
             documents = [{"id": "1", "text": text}]
-            result = self.language_client.extract_key_phrases(documents=documents)
+            result = self.language_client.extract_key_phrases(documents=documents, language=language)
 
             if result and result[0].is_error is False:
                 key_phrases = result[0].key_phrases
@@ -132,6 +133,42 @@ class AzureNLPService:
         except Exception as error:
             print(f"[NLP] Key phrase extraction error: {error}")
             return []
+
+    def summarize(self, text, language, sentence_count):
+        """Return a summary of about sentence_count sentences, or None when it cannot be made.
+
+        Abstractive summarization (a generated summary) is tried first. It is not available in
+        every region and language, so on an error the most important sentences of the text
+        are returned instead (extractive summarization).
+        """
+        print("[NLP] Summarizing...")
+        documents = [{"id": "1", "text": text}]
+
+        try:
+            poller = self.language_client.begin_abstract_summary(
+                documents, language=language, sentence_count=sentence_count
+            )
+            for result in poller.result():
+                if result.is_error:
+                    print(f"[NLP] Abstractive summarization failed: {result.error.message}")
+                elif result.summaries:
+                    return " ".join(summary.text for summary in result.summaries)
+        except Exception as error:
+            print(f"[NLP] Abstractive summarization error: {error}")
+
+        try:
+            poller = self.language_client.begin_extract_summary(
+                documents, language=language, max_sentence_count=sentence_count
+            )
+            for result in poller.result():
+                if result.is_error:
+                    print(f"[NLP] Extractive summarization failed: {result.error.message}")
+                elif result.sentences:
+                    return " ".join(sentence.text for sentence in result.sentences)
+        except Exception as error:
+            print(f"[NLP] Extractive summarization error: {error}")
+
+        return None
 
     def analyze_sentiment(self, text):
         print("[NLP] Analyzing sentiment...")

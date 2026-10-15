@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1460" height="1300" viewBox="0 0 1460 1300" role="img" aria-labelledby="title desc">
   <title id="title">Travel Agent Planner multi-agent architecture</title>
-  <desc id="desc">Five prompt agents in Azure AI Foundry Agent Service, all guarded by one RAI policy: a manager agent on gpt-5.6-luna and four specialist agents on gpt-5-mini for the knowledge base, web search, weather and hotels. A Magentic workflow in the local client asks for the user name, calls every agent, runs the weather and hotel function tools against the Visual Crossing and Google Maps Places APIs, detects the language of each question with Azure AI Language, stores the user profile, preferences and conversation history in Azure Cosmos DB and converts the final answer to speech with Azure AI Speech. Every local script reads its endpoints, names and keys from Azure Key Vault. Setup scripts deploy the Azure resources to Switzerland North, build the knowledge base and create the agents.</desc>
+  <desc id="desc">Five prompt agents in Azure AI Foundry Agent Service, all guarded by one RAI policy: a manager agent on gpt-5.6-luna and four specialist agents on gpt-5-mini for the knowledge base, web search, weather and hotels. A Magentic workflow in the local client asks for the user name and e-mail address, calls every agent, runs the weather and hotel function tools against the Visual Crossing and Google Maps Places APIs, detects the language of each question and, after every answer, summarises the trip and extracts keywords with Azure AI Language, stores the user profile, preferences, the travel history the user accepted and the conversation history in Azure Cosmos DB, gives the manager the travel history as context and converts the final answer to speech with Azure AI Speech. Every local script reads its endpoints, names and keys from Azure Key Vault. Setup scripts deploy the Azure resources to Switzerland North, build the knowledge base and create the agents.</desc>
 
   <style>
     text { font-family: "Segoe UI", -apple-system, "Helvetica Neue", Arial, sans-serif; fill: #1F2328; }
@@ -44,7 +44,7 @@
   <!-- Canvas -->
   <rect x="0" y="0" width="1460" height="1300" rx="16" fill="#FFFFFF"/>
   <text x="30" y="44" class="h1">Travel Agent Planner · Multi-agent architecture</text>
-  <text x="30" y="68" class="sub">Five Azure AI Foundry prompt agents orchestrated by a local Magentic workflow · user memory in Cosmos DB · language detection with Azure AI Language · every setting and key in Key Vault</text>
+  <text x="30" y="68" class="sub">Five Azure AI Foundry prompt agents orchestrated by a local Magentic workflow · user memory and travel history in Cosmos DB · Azure AI Language · every setting and key in Key Vault</text>
 
   <!-- ============================ LEFT: local runtime ============================ -->
   <rect x="30" y="90" width="340" height="510" rx="12" fill="#F6F8FA" stroke="#D0D7DE"/>
@@ -58,7 +58,7 @@
   <text x="82" y="227" class="t mono">agent_execution.py</text>
   <text x="62" y="250" class="s">Magentic workflow · Microsoft Agent Framework</text>
   <text x="62" y="268" class="s">MagenticBuilder · new workflow per user message</text>
-  <text x="62" y="286" class="s">5 × FoundryAgent, one per server-side agent</text>
+  <text x="62" y="286" class="s">5 × FoundryAgent; manager + travel history</text>
   <text x="62" y="312" class="t" style="font-size:11.5px">Local function tools (@tool)</text>
   <rect x="62" y="322" width="276" height="26" rx="13" class="fn"/>
   <text x="200" y="339" class="mono c" style="font-size:12px">get_forecast_weather</text>
@@ -66,10 +66,10 @@
   <text x="200" y="371" class="mono c" style="font-size:12px">search_hotels_google_maps</text>
   <text x="62" y="404" class="s">middleware: log_tool_calls (prints every call)</text>
   <text x="62" y="432" class="t" style="font-size:11.5px">User, memory and settings</text>
-  <text x="62" y="452" class="s">start: asks for the user name → user id</text>
+  <text x="62" y="452" class="s">start: user name + e-mail → user id</text>
   <text x="62" y="474" class="s" style="fill:#1F2328">text_to_speech → outputs/audio_file.wav</text>
-  <text x="62" y="494" class="s" style="fill:#1F2328">AzureNLPService: language of the question</text>
-  <text x="62" y="514" class="s" style="fill:#1F2328">CosmosMemory: profile · conversation_history</text>
+  <text x="62" y="494" class="s" style="fill:#1F2328">AzureNLPService: language, summary, keywords</text>
+  <text x="62" y="514" class="s" style="fill:#1F2328">CosmosMemory: profile · trip_history</text>
   <text x="62" y="534" class="s" style="fill:#1F2328">SecretManager: endpoints &amp; keys (Key Vault)</text>
   <text x="62" y="562" class="xs mono">classes/*_services.py</text>
 
@@ -215,8 +215,8 @@
   <!-- Azure AI Language -->
   <rect x="466" y="1018" width="250" height="124" rx="10" class="svc"/>
   <text x="482" y="1040" class="group" style="fill:#0060AA">Azure AI Language <tspan class="s" style="font-weight:400">· free tier (F0)</tspan></text>
-  <text x="482" y="1066" class="s" style="fill:#1F2328">detects the language of each question</text>
-  <text x="482" y="1086" class="xs">→ preferences.language in Cosmos DB</text>
+  <text x="482" y="1066" class="s" style="fill:#1F2328">language · trip summary · keywords</text>
+  <text x="482" y="1086" class="xs">→ Cosmos DB (trips only on consent)</text>
   <text x="482" y="1124" class="mono" style="font-size:9px;fill:#57606A">LANGUAGE-ENDPOINT · LANGUAGE-KEY</text>
 
   <!-- Azure Cosmos DB -->
@@ -224,12 +224,12 @@
   <text x="748" y="1040" class="group" style="fill:#0060AA">Azure Cosmos DB <tspan class="s" style="font-weight:400">· free tier</tspan></text>
   <rect x="748" y="1052" width="310" height="78" rx="10" class="inner"/>
   <text x="903" y="1072" class="t c">container · partition key <tspan class="mono">/userId</tspan></text>
-  <text x="903" y="1092" class="xs c" style="fill:#1F2328">one profile per user: name · role · preferences</text>
-  <text x="903" y="1110" class="xs c" style="fill:#1F2328">conversation_history (fine-tuning) · TTL 90 days</text>
+  <text x="903" y="1092" class="xs c" style="fill:#1F2328">one profile per user: name · e-mail · preferences</text>
+  <text x="903" y="1110" class="xs c" style="fill:#1F2328">trip_history · conversation_history · TTL 90 days</text>
 
   <!-- Azure Key Vault -->
   <rect x="466" y="1170" width="608" height="84" rx="10" class="kv"/>
-  <text x="482" y="1192" class="group" style="fill:#7D4E00">Azure Key Vault <tspan class="s" style="font-weight:400">· Azure RBAC · 27 secrets</tspan></text>
+  <text x="482" y="1192" class="group" style="fill:#7D4E00">Azure Key Vault <tspan class="s" style="font-weight:400">· Azure RBAC · 26 secrets</tspan></text>
   <text x="482" y="1212" class="s" style="fill:#1F2328">every local script reads its endpoints, names and keys here (SecretManager · Entra ID)</text>
   <text x="482" y="1229" class="xs">written by resource_deployment.bicep · the only Bicep output is KEY_VAULT_URL</text>
   <text x="482" y="1246" class="mono" style="font-size:9px;fill:#57606A">PROJECT-ENDPOINT · SEARCH-ENDPOINT · SPEECH-KEY · LANGUAGE-KEY · COSMOSDB-PRIMARY-KEY · GOOGLE-API-KEY · …</text>

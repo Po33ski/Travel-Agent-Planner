@@ -44,7 +44,8 @@ python single_agent_exe_and_eval.py                  # evaluate travelAgent
 
 ## Things defined in more than one place (keep in sync)
 
-- **Team wiring** (`FoundryAgent` names, descriptions, tools and middleware, and the Magentic limits) is duplicated in `agent_execution.py` and `magentic_exe_and_eval.py`. The single-agent wiring is in `single_agent_exe_and_eval.py`.
+- **Team wiring** (`FoundryAgent` names, descriptions, tools and middleware, and the Magentic limits) is duplicated in `agent_execution.py` and `magentic_exe_and_eval.py`. The single-agent wiring is in `single_agent_exe_and_eval.py`. Exception on purpose: only the chat attaches `TravelHistoryProvider` (`context_providers`) to the manager, because the evaluation has no user profile.
+- **Travel history note**: the first line `Travel history of this user:` built in `classes/travel_history_provider.py` and the *Travel history* section of the manager's prompt.
 - **Agent names**: `agent_name` in `agents/*_config.yaml`, the `FoundryAgent` names in the run scripts, the *Team* section of the manager's prompt, `expected_agents` / `unexpected_agents` in `inputs/evaluation_prompts.yaml`, and the keys of `evaluation.agent_evaluators` in `config.yaml` (a missing agent is silently not evaluated).
 - **Function tool schemas**: the JSON `FunctionTool` schemas in `agents/weather_agent_deployment.py`, `agents/hotel_agent_deployment.py` and `agents/single_agent/travel_agent_deployment.py` must match the parameter names of the Python `@tool` functions.
 - **Answer word limit**: the manager and single-agent system prompts, and `evaluation.max_answer_words` in `config.yaml`.

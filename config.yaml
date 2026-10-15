@@ -27,6 +27,14 @@ guardrails:
 cosmos:
   profile_ttl_seconds: 7776000 # 90 days
 
+# Travel history (agent_execution.py): after every answer Azure AI Language summarises the trip and
+# extracts keywords; both are saved only when the user accepts, and the manager gets them as context
+memory:
+  summary_sentence_count: 2   # sentences of one trip summary
+  max_keywords_per_answer: 8  # keywords taken from one user request
+  max_travel_keywords: 20     # preferences.travel_keywords keeps the newest ones
+  max_trip_summaries: 5       # trip_history keeps the newest ones; all of them go to the manager
+
 nlp:
   sentiment_analysis:
     sentiment_escalation_threshold: 0.5

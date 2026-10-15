@@ -175,7 +175,7 @@
 
   <!-- Azure Key Vault -->
   <rect x="466" y="796" width="608" height="88" rx="10" class="kv"/>
-  <text x="482" y="818" class="group" style="fill:#7D4E00">Azure Key Vault <tspan class="s" style="font-weight:400">· Azure RBAC · 27 secrets</tspan></text>
+  <text x="482" y="818" class="group" style="fill:#7D4E00">Azure Key Vault <tspan class="s" style="font-weight:400">· Azure RBAC · 26 secrets</tspan></text>
   <text x="482" y="838" class="s d">both scripts of the single agent read their endpoints, names and keys here (SecretManager · Entra ID)</text>
   <text x="482" y="855" class="xs">the same vault as the team · written by resource_deployment.bicep</text>
   <text x="482" y="872" class="mono" style="font-size:9px;fill:#57606A">PROJECT-ENDPOINT · LLM-MODEL-DEPLOYMENT-NAME · VISUAL-CROSSING-API-KEY · GOOGLE-API-KEY · …</text>
