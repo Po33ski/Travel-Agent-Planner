@@ -105,6 +105,24 @@ def create_or_update_agent(
         }
     )
 
+    # Parameters must match ask_user_about_hotels in classes/human_review_services.py
+    hotel_review_tool = FunctionTool(
+        name="ask_user_about_hotels",
+        description="Show the chosen hotels to the user and ask whether they are OK. "
+        "Returns approved=true, or approved=false with the user's comment on what to change.",
+        parameters={
+                "type": "object",
+                "properties": {
+                    "hotels": {
+                        "type": "string",
+                        "description": "The chosen hotels in the user's language, one line per hotel: "
+                        "the name, the rating when available and in a few words why it matches.",
+                    },
+                },
+                "required": ["hotels"],
+        }
+    )
+
     try:
         print(f"   ✨ Creating or updating agent: {agent_name}")
         agent = project_client.agents.create_version(
@@ -112,7 +130,7 @@ def create_or_update_agent(
             definition=PromptAgentDefinition(
                 model=llm_model_deployment_name,
                 instructions=system_prompt,
-                tools=[hotel_search_tool],
+                tools=[hotel_search_tool, hotel_review_tool],
                 rai_config=rai_config,
             ),
         )

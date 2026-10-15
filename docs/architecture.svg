@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1460" height="1300" viewBox="0 0 1460 1300" role="img" aria-labelledby="title desc">
   <title id="title">Travel Agent Planner multi-agent architecture</title>
-  <desc id="desc">Five prompt agents in Azure AI Foundry Agent Service, all guarded by one RAI policy: a manager agent on gpt-5.6-luna and four specialist agents on gpt-5-mini for the knowledge base, web search, weather and hotels. A Magentic workflow in the local client asks for the user name and e-mail address, calls every agent, runs the weather and hotel function tools against the Visual Crossing and Google Maps Places APIs, detects the language of each question and, after every answer, summarises the trip and extracts keywords with Azure AI Language, stores the user profile, preferences, the travel history the user accepted and the conversation history in Azure Cosmos DB, gives the manager the travel history as context and converts the final answer to speech with Azure AI Speech. Every local script reads its endpoints, names and keys from Azure Key Vault. Setup scripts deploy the Azure resources to Switzerland North, build the knowledge base and create the agents.</desc>
+  <desc id="desc">Five prompt agents in Azure AI Foundry Agent Service, all guarded by one RAI policy: a manager agent on gpt-5.6-luna and four specialist agents on gpt-5-mini for the knowledge base, web search, weather and hotels. A Magentic workflow in the local client asks for the user name and e-mail address, lets the user approve or correct the manager's plan, calls every agent, runs the weather and hotel function tools and a hotel review tool that asks the user to approve the chosen hotels, against the Visual Crossing and Google Maps Places APIs, detects the language of each question and, after every answer, summarises the trip and extracts keywords with Azure AI Language, stores the user profile, preferences, the travel history the user accepted and the conversation history in Azure Cosmos DB, gives the manager the travel history as context and converts the final answer to speech with Azure AI Speech. Every local script reads its endpoints, names and keys from Azure Key Vault. Setup scripts deploy the Azure resources to Switzerland North, build the knowledge base and create the agents.</desc>
 
   <style>
     text { font-family: "Segoe UI", -apple-system, "Helvetica Neue", Arial, sans-serif; fill: #1F2328; }
@@ -57,14 +57,14 @@
   <circle cx="64" cy="222" r="10" class="badge"/><text x="64" y="226" class="badge-t">4</text>
   <text x="82" y="227" class="t mono">agent_execution.py</text>
   <text x="62" y="250" class="s">Magentic workflow · Microsoft Agent Framework</text>
-  <text x="62" y="268" class="s">MagenticBuilder · new workflow per user message</text>
+  <text x="62" y="268" class="s">plan review (user) · new workflow per message</text>
   <text x="62" y="286" class="s">5 × FoundryAgent; manager + travel history</text>
   <text x="62" y="312" class="t" style="font-size:11.5px">Local function tools (@tool)</text>
   <rect x="62" y="322" width="276" height="26" rx="13" class="fn"/>
   <text x="200" y="339" class="mono c" style="font-size:12px">get_forecast_weather</text>
   <rect x="62" y="354" width="276" height="26" rx="13" class="fn"/>
   <text x="200" y="371" class="mono c" style="font-size:12px">search_hotels_google_maps</text>
-  <text x="62" y="404" class="s">middleware: log_tool_calls (prints every call)</text>
+  <text x="62" y="404" class="s">+ ask_user_about_hotels: the user approves hotels</text>
   <text x="62" y="432" class="t" style="font-size:11.5px">User, memory and settings</text>
   <text x="62" y="452" class="s">start: user name + e-mail → user id</text>
   <text x="62" y="474" class="s" style="fill:#1F2328">text_to_speech → outputs/audio_file.wav</text>

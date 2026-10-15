@@ -8,6 +8,7 @@ from azure.keyvault.secrets import SecretClient
 import yaml
 from classes.weather_services import get_forecast_weather
 from classes.google_services import search_hotels_google_maps
+from classes.human_review_services import approve_hotels_automatically
 from classes.secret_manager_services import SecretManager
 from classes.evaluate_services import EvaluateService
 from utils.agent_middleware import (
@@ -106,7 +107,8 @@ def create_agents(usage_middleware):
         description="Searches Google Maps for hotels in a city and picks the ones that best match the user's "
         "preferences: ratings, reviews, amenities and links. It has no room prices.",
         credential=credential,
-        tools=[search_hotels_google_maps],
+        # hotelAgent asks the user to review its hotels; nobody answers here, so the choice is approved
+        tools=[search_hotels_google_maps, approve_hotels_automatically],
         middleware=[drop_foreign_tool_contents, usage_middleware, blocked_reply_monitor, log_agent_replies, log_tool_calls],
     )
 

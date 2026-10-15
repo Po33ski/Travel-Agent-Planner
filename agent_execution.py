@@ -13,6 +13,7 @@ from azure.ai.textanalytics import TextAnalyticsClient
 import yaml
 from classes.weather_services import get_forecast_weather
 from classes.google_services import search_hotels_google_maps
+from classes.human_review_services import ask_user_about_hotels, review_plan
 from classes.speech_services import text_to_speech
 from classes.secret_manager_services import SecretManager
 from classes.cosmos_memory_services import CosmosMemory
@@ -132,7 +133,8 @@ def create_agents(travel_history: TravelHistoryProvider):
         credential=credential,
         middleware=[drop_foreign_tool_contents, blocked_reply_monitor, log_agent_replies],
     )
-    # Function tools run locally, so the weather and hotel agents need their Python implementations
+    # Function tools run locally, so the weather and hotel agents need their Python implementations.
+    # ask_user_about_hotels shows hotelAgent's choice to the user in the console before it replies.
     weather_agent = FoundryAgent(
         project_endpoint=endpoint,
         agent_name="weatherAgent",
@@ -147,7 +149,7 @@ def create_agents(travel_history: TravelHistoryProvider):
         description="Searches Google Maps for hotels in a city and picks the ones that best match the user's "
         "preferences: ratings, reviews, amenities and links. It has no room prices.",
         credential=credential,
-        tools=[search_hotels_google_maps],
+        tools=[search_hotels_google_maps, ask_user_about_hotels],
         middleware=[drop_foreign_tool_contents, blocked_reply_monitor, log_agent_replies, log_tool_calls],
     )
 
@@ -166,12 +168,28 @@ def create_workflow(manager_agent, participants):
         # A reset clears the shared conversation and starts again from the first agent. After the
         # second reset the workflow terminates instead of repeating the same rounds up to the round limit.
         max_reset_count=2,
+        # The user approves or corrects the manager's plan before any agent runs, and again after a replan
+        enable_plan_review=True,
     ).build()
 
-    # 3. Convert the workflow to an agent
-    workflow_agent = workflow.as_agent(name="travelPlannerWorkflow")
+    return workflow
 
-    return workflow_agent
+
+async def run_with_plan_review(workflow, task: str) -> str:
+    """Run the workflow, answer its plan review requests in the console and return the final answer.
+
+    With plan review the workflow stops after each plan and waits for the user's response, so
+    workflow.run() returns pending requests instead of the answer. '' when there is no final answer
+    (for example when the round limit is hit).
+    """
+    result = await workflow.run(task)
+    while requests := result.get_request_info_events():
+        result = await workflow.run(responses={event.request_id: review_plan(event.data) for event in requests})
+
+    outputs = result.get_outputs()
+    if not outputs:
+        return ""
+    return getattr(outputs[-1], "text", str(outputs[-1]))
 
 
 def save_response_and_preferences(user_id: str, user_text: str, assistant_text: str) -> None:
@@ -253,9 +271,9 @@ def ask_user_email(stored_email: str | None) -> str | None:
 
 
 # Microsoft Agent Frame is built entirely on async programming.
-# agent.run() is an async method, so you need to run it in an async context.
+# workflow.run() is an async method, so you need to run it in an async context.
 async def run_workflow(manager_agent, participants, user_id: str, travel_history: TravelHistoryProvider):
-    print("Interactive workflow-agent mode started. Type 'exit' or 'quit' to stop.\n")
+    print("Interactive workflow mode started. Type 'exit' or 'quit' to stop.\n")
 
     while True:
         try:
@@ -275,16 +293,15 @@ async def run_workflow(manager_agent, participants, user_id: str, travel_history
 
             # A Magentic workflow handles exactly one task and then refuses further messages,
             # so a new one is built for every user message
-            agent = create_workflow(manager_agent, participants)
+            workflow = create_workflow(manager_agent, participants)
 
-            # Run the workflow-agent directly using standard agent execution
             blocked_reply_monitor.reset()
             # The agents do not know the current date, so it is put in front of the message.
             # The conversation history below keeps the message as the user wrote it.
-            result = await agent.run(add_todays_date(user_message_text))
-
-            # The result object from an agent run typically contains a text property
-            final_text = getattr(result, "text", str(result))
+            final_text = await run_with_plan_review(workflow, add_todays_date(user_message_text))
+            if not final_text:
+                print("⚠️ The workflow ended without a final answer. Please try again.")
+                continue
 
             print("\n" + "=" * 50)
             print("ASSISTANT REPLY:")

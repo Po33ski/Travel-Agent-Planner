@@ -52,7 +52,7 @@ The chat does not use `travelAgent`. It exists so that the [evaluation](#evaluat
 | `rag_setup.py` | Uploads the travel guide and builds the Foundry IQ knowledge source and knowledge base |
 | `agents/<agent>_deployment.py` | One script per agent. Creates or updates the RAI policy and the server-side agent (system prompt and tools) |
 | `agents/<agent>_config.yaml` | One file per agent: agent name and system prompt |
-| `agent_execution.py` | Interactive command-line chat. Asks for the user name and e-mail address, builds the Magentic workflow, runs the weather and hotel search tools locally, saves the conversation and preferences to Cosmos DB, converts the final answer to speech and offers to save a trip summary and keywords |
+| `agent_execution.py` | Interactive command-line chat. Asks for the user name and e-mail address, builds the Magentic workflow, asks the user to approve the manager's plan, runs the weather, hotel search and hotel review tools locally, saves the conversation and preferences to Cosmos DB, converts the final answer to speech and offers to save a trip summary and keywords |
 | `magentic_exe_and_eval.py` | Runs the test prompts through the Magentic workflow, evaluates every run and saves the report in `outputs/` |
 | `single_agent_exe_and_eval.py` | The same evaluation for the single agent `travelAgent` |
 | `agents/single_agent/` | Deployment script and config file (agent name and system prompt) of the single agent `travelAgent` |
@@ -65,6 +65,7 @@ The chat does not use `travelAgent`. It exists so that the [evaluation](#evaluat
 | `classes/foundry_iq_services.py` | `FoundryIQService`: blob upload, knowledge source, ingestion, knowledge base, MCP tool |
 | `classes/weather_services.py` | `WeatherService` and the `get_forecast_weather` / `get_current_weather` tools |
 | `classes/google_services.py` | `GooglePlacesService` (Google Maps Places API) and the `search_hotels_google_maps` tool |
+| `classes/human_review_services.py` | Human in the loop for the chat: `review_plan` (plan review in the console), the `ask_user_about_hotels` tool and its evaluation stand-in `approve_hotels_automatically` |
 | `classes/speech_services.py` | `AzureSpeechService` and the `text_to_speech` helper |
 | `classes/rai_policies_services.py` | `RaiPolicyManager`: builds and deploys the RAI policy from `config.yaml` |
 | `utils/utils.py` | `add_todays_date`, which puts today's date in front of every task, and helpers for normalising weather API responses |
@@ -238,6 +239,11 @@ I'm going to Lisbon from 2026-10-12 to 2026-10-15. Can you plan my trip and sugg
 
 Describe the hotel you want (location, style, amenities, who travels): the hotel agent passes the description to the search and picks the hotels that match it best. The search has no room prices and no availability for the travel dates, so the answer points you to the hotel's website for them.
 
+The chat stops twice to ask you (see [Human in the loop](#human-in-the-loop)):
+
+- **`PLAN:`** before any agent runs. Press Enter (or `y`/`t`) to start, or type what to change, for example "skip the weather, add hotels near the beach". The manager plans again and shows the new plan.
+- **`HOTEL REVIEW:`** after the hotel agent has chosen hotels. Press Enter to accept, `n` to get other hotels, or type what you want instead, for example "closer to the beach". The agent chooses once more and does not ask again.
+
 ### 9. Evaluate the agents
 
 ```powershell
@@ -362,7 +368,7 @@ All five agents are **prompt agents** (`PromptAgentDefinition`) hosted in Azure 
 | `ragDataAgent` | `gpt-5-mini` | `knowledge_base_retrieve` | Attractions, restaurants, events, transport and practical tips from the travel guide. First choice for destination information |
 | `webDataAgent` | `gpt-5-mini` | `web_search` | General country information such as entry and visa rules, and fallback for information the knowledge base did not return |
 | `weatherAgent` | `gpt-5-mini` | `get_forecast_weather` | Daily weather forecast for the destination and dates |
-| `hotelAgent` | `gpt-5-mini` | `search_hotels_google_maps` | The hotels that best match the user's preferences, with ratings, reasons and links |
+| `hotelAgent` | `gpt-5-mini` | `search_hotels_google_maps`, `ask_user_about_hotels` | The hotels that best match the user's preferences, with ratings, reasons and links |
 
 ### Deployment (`agents/<agent>_deployment.py`)
 
@@ -381,7 +387,7 @@ The orchestration runs **on the client**. The agents never call each other. The 
 
 Before the first message, the chat asks for the user name, loads or creates the user's profile in Cosmos DB, asks for the e-mail address and reads the user's saved travel history. For every user message the workflow then does the following:
 
-1. **Plan.** The manager collects the known facts and writes a plan for the team.
+1. **Plan.** The manager collects the known facts and writes a plan for the team. The chat shows the plan, and the user approves it or types corrections; a correction makes the manager plan again (see [Human in the loop](#human-in-the-loop)).
 2. **Check progress.** At the start of each round the manager answers: is the request satisfied, is progress being made, which agent goes next and with what instruction.
 3. **Delegate.** The chosen specialist runs with that instruction. Its reply is shared with the other agents.
 4. **Answer.** When the manager judges the request satisfied, it writes the final answer from the collected results.
@@ -399,6 +405,14 @@ Details worth knowing:
 - **Refused or blocked answers.** A reply that the model refuses, or that the content filter cuts off on the output side, arrives without an error: the text ends early and a refusal such as *"I'm sorry, but I cannot assist with that request."* takes its place. `BlockedReplyMonitor` (`utils/agent_middleware.py`) on every agent detects this and prints `[GUARDRAIL]` lines with the refusal, the finish reason, the response status and any content filter results the service reported. No filter results usually means the model refused on its own. A blocked *input* is different: it raises `ChatClientContentFilterException`, which the chat reports as *"blocked by the content safety policy"*.
 - **Console log.** `log_tool_calls` prints every local function call and a truncated result as `[TOOL] -> ...` / `[TOOL] <- ...`. `log_manager_decisions` prints the manager's decision at the start of every round as `[MANAGER] ...`: the next agent, the reason and the instruction, or that the request is satisfied. `log_agent_replies` prints what each specialist sent back as `[AGENT] <name> replied: ...`, truncated to 1,500 characters. All three are in `utils/agent_middleware.py`.
 
+### Human in the loop
+
+The chat asks the user at two points. Both are handled in `classes/human_review_services.py`.
+
+- **Plan review.** `MagenticBuilder(enable_plan_review=True)` makes the workflow stop after each plan (the first one and every replan after a stall) with a `MagenticPlanReviewRequest`. `workflow.run()` then returns the pending request instead of the answer, so the chat runs the workflow directly (not through `workflow.as_agent()`): `run_with_plan_review()` shows the plan with `review_plan()` and sends the response back with `workflow.run(responses=...)` until the final answer comes. Magentic can only approve or revise a plan, not reject it: a correction goes to the manager as a user message and it plans again. Approving costs no model call; each correction costs one replan.
+- **Hotel review.** `hotelAgent` has a second local function tool, `ask_user_about_hotels(hotels)`. After choosing the hotels for a city it calls the tool once; the tool prints the choice and reads the answer with `input()` (Agent Framework runs a sync tool in a worker thread, so the event loop is not blocked). It returns `{"approved": true}` or `{"approved": false, "comment": "..."}`. After a rejection the agent chooses again, first from the results it already has and, when none fits the comment, with one more search; it does not ask again. The review happens inside the agent's turn, so the manager only sees the final choice and a line saying that the user rejected the first one.
+- **Evaluation.** The evaluation has nobody to answer: it builds the workflow without plan review and gives `hotelAgent` `approve_hotels_automatically`, a tool with the same name that always approves. The single agent `travelAgent` has no review tool.
+
 ### Behaviour (system prompts in `agents/*_config.yaml`)
 
 **`managerAgent`**
@@ -408,23 +422,24 @@ Details worth knowing:
 - **Delegation order for a trip.** Destination information goes to `ragDataAgent` first, and to `webDataAgent` only for what the knowledge base did not return. Weather is mandatory whenever the request names a city or place to visit, also without dates and when the user asks only about attractions, food or hotels. The exception is a trip that takes place, in whole or in part, later than the next 15 days: the forecast does not reach that far, so `weatherAgent` is not asked at all and the answer says that the forecast is not available yet. Hotels are searched only when the user asks about accommodation.
 - **Asking an agent again.** Allowed in two cases only: several cities (one instruction per city), and a wrong or weak reply (one more attempt, with an instruction that says what was wrong). Otherwise an agent that has already replied for a city, with data, "not found" or an error, is not asked again. `hotelAgent` is asked once per city, with everything the user said about the hotel they want, for 2 or 3 hotels where only the name is required: missing ratings or links are not a reason to ask again. The manager never asks for prices per night or availability, because the hotel search does not have them.
 - **Finishing.** As soon as every needed agent has replied, the manager marks the request as satisfied in the progress check and writes the final answer, naming anything still missing. It never picks an agent a third time for the same city.
-- **No questions to the user.** The user cannot be asked during a task, so the manager uses sensible defaults and states its assumptions in the answer.
+- **No questions to the user.** The manager cannot ask the user during a task, so it uses sensible defaults and states its assumptions in the answer. Only `hotelAgent` asks the user, to approve its hotels; a reply that says the user rejected the first suggestions is final and not a reason to ask `hotelAgent` again.
+- **Plan review.** A correction the user sends after seeing the plan is part of the request and wins where it differs from the original request. It cannot make an out-of-scope request in scope.
 - **Accuracy first.** The final answer uses only facts reported by the team, keeps prices, currencies and links exactly as the agents returned them, and adds no citation markers. If the team found nothing at all, the reply is exactly: *"I'm sorry, I don't have that information."* If only a part is missing, the manager gives what was found and says which part could not be found.
 - **Answer structure.** Weather summary, then the (day-by-day) plan, then accommodation (only when hotels were searched), then transport and practical tips. Written in the user's language, maximum 500 words.
 - **Travel history.** The saved summaries and keywords from Cosmos DB (see [Travel history](#travel-history)) are only an addition: the current request comes first and wins when the two disagree, and the history never starts a task on its own. A fact that clearly matters is still used, above all places the user has already been to: on a trip to a city from the history the manager prefers new attractions, restaurants and hotels and passes the places to skip to the specialists. A place is recommended again only when the user asks for it, or marked as already visited when the team finds nothing new. Interests and hotel wishes from the keywords fill in only what the current request does not say.
 
-**Specialist agents** share these rules: reply to the manager, not to the user; do only the assigned task and say when something is outside their scope; ask no follow-up questions; never answer from their own knowledge; call their tool again only for another city or when the result is wrong or too weak, and never repeat an identical call. They do not see the travel history: when the manager's instruction lists places to skip, `ragDataAgent`, `webDataAgent` and `hotelAgent` recommend other ones (`hotelAgent` does not put the skipped hotels into the search preferences), and say so when there are no others. In addition:
+**Specialist agents** share these rules: reply to the manager, not to the user; do only the assigned task and say when something is outside their scope; ask no follow-up questions (only `hotelAgent` asks the user to approve its hotels, through its review tool); never answer from their own knowledge; call their tool again only for another city or when the result is wrong or too weak, and never repeat an identical call. They do not see the travel history: when the manager's instruction lists places to skip, `ragDataAgent`, `webDataAgent` and `hotelAgent` recommend other ones (`hotelAgent` does not put the skipped hotels into the search preferences), and say so when there are no others. In addition:
 
 - **`ragDataAgent`** always calls `knowledge_base_retrieve`, uses only passages about the requested destination and starts its reply with *"From the knowledge base:"*. It adds no citation markers: the knowledge base returns passages without them, so a marker such as `【6:0†source】` would be invented. It ends with a *"Not found in the knowledge base:"* line, so the manager knows what to send to web search.
 - **`webDataAgent`** searches for travel information missing from the knowledge base and for general information about any country (entry and visa rules, currency, language, safety, customs, public holidays). It searches only for the items it was asked about, prefers official sources and gives each finding with its source. It does not search for weather or hotels.
 - **`weatherAgent`** reports max/min temperature, precipitation probability, wind speed and conditions for each day, and bases packing tips on the actual data.
-- **`hotelAgent`** passes the user's hotel preferences to the search as a few keywords and recommends the 2 or 3 returned hotels that match best, the best match first. It prefers a hotel whose data (type, address, summary, guest reviews, rating, amenities) confirms a preference over one that is only highly rated; without preferences it picks well-rated hotels with many reviews. Only the hotel name is required: the reason for the match, the rating, the price category and the links are added when the results contain them, and a preference that the results cannot confirm is named instead of guessed. The agent never states a price per night and ends with one line saying that room prices and availability have to be checked on the hotel's website.
+- **`hotelAgent`** passes the user's hotel preferences to the search as a few keywords and recommends the 2 or 3 returned hotels that match best, the best match first. It prefers a hotel whose data (type, address, summary, guest reviews, rating, amenities) confirms a preference over one that is only highly rated; without preferences it picks well-rated hotels with many reviews. Only the hotel name is required: the reason for the match, the rating, the price category and the links are added when the results contain them, and a preference that the results cannot confirm is named instead of guessed. The agent never states a price per night and ends with one line saying that room prices and availability have to be checked on the hotel's website. Before replying it shows its choice to the user with `ask_user_about_hotels`, once per city; after a rejection it chooses again (with one more search only when none of the results fits the user's comment) and says in one line that the user rejected the first suggestions.
 
 ---
 
 ## Tools
 
-The single agent `travelAgent` has all four tools.
+The single agent `travelAgent` has the first four tools.
 
 | Tool | Team agent | Type | Where it runs |
 |---|---|---|---|
@@ -432,6 +447,7 @@ The single agent `travelAgent` has all four tools.
 | `web_search` | `webDataAgent` | Built-in `WebSearchTool` | Server-side |
 | `get_forecast_weather` | `weatherAgent` | `FunctionTool` | Locally, in the script that runs the agents |
 | `search_hotels_google_maps` | `hotelAgent` | `FunctionTool` | Locally, in the script that runs the agents |
+| `ask_user_about_hotels` | `hotelAgent` (team only) | `FunctionTool` | Locally: asks the user in the chat console; always approves in the evaluation |
 
 ### Foundry IQ knowledge base (`knowledge_base_retrieve`)
 
@@ -524,7 +540,7 @@ Speech is not an agent tool. `agent_execution.py` calls `text_to_speech(text, vo
 
 Two things are defined in more than one place:
 
-- **Function tool schemas.** `agents/weather_agent_deployment.py` and `agents/hotel_agent_deployment.py` hold the `FunctionTool` JSON schemas for the server-side agents (`agents/single_agent/travel_agent_deployment.py` holds both for the single agent), and `weather_services.py` / `google_services.py` hold the `@tool` Python implementations for the client. Keep the tool and parameter names in sync.
+- **Function tool schemas.** `agents/weather_agent_deployment.py` and `agents/hotel_agent_deployment.py` hold the `FunctionTool` JSON schemas for the server-side agents (`agents/single_agent/travel_agent_deployment.py` holds both for the single agent), and `weather_services.py` / `google_services.py` / `human_review_services.py` hold the `@tool` Python implementations for the client. `ask_user_about_hotels` has two implementations with the same name and parameters: the console one for the chat and `approve_hotels_automatically` for the evaluation. Keep the tool and parameter names in sync.
 - **Agent names.** The `agent_name` in each `agents/<agent>_config.yaml` must match the name used in `agent_execution.py` and `magentic_exe_and_eval.py`, the *Team* section of the manager's system prompt, `expected_agents` / `unexpected_agents` in `inputs/evaluation_prompts.yaml` and the keys of `evaluation.agent_evaluators` in `config.yaml`. An agent whose name is missing from `agent_evaluators` is silently not evaluated.
 
 ---
@@ -681,6 +697,7 @@ The Foundry evaluators run in the Foundry project, not locally: the script uploa
 - The final answer goes through the built-in `evaluate_workflow` (workflow) or `evaluate_agent` (single agent).
 - The agents go through `_evaluate_agent_items`, one Foundry evaluation run per agent. `evaluate_workflow` cannot be used here: it applies one set of evaluators to every agent and passes no context. Instead, `evaluate_agents` takes every specialist call from the workflow events (`executor_completed` events of the agent executors) and builds the items itself (`_agent_item`). The single agent's work goes the same way, so both reports have the same format.
 - A failed evaluation is recorded in the report instead of stopping the script.
+- Nobody answers during the evaluation: the workflow is built without plan review, and `hotelAgent`'s review tool `ask_user_about_hotels` is replaced by `approve_hotels_automatically`, which approves every choice. The review call still shows up among `hotelAgent`'s tool calls.
 
 **Token counting.** `TokenUsageMiddleware` is added to every `FoundryAgent`. After each agent call it reads `usage_details` from the response and adds it to the totals of that agent. The Magentic manager is called by the orchestrator and does not appear in the workflow events as an agent, so the middleware is the only place that sees its usage. The judge's tokens are taken from the evaluation results and counted separately.
 
