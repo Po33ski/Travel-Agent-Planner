@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1460" height="1300" viewBox="0 0 1460 1300" role="img" aria-labelledby="title desc">
   <title id="title">Travel Agent Planner multi-agent architecture</title>
-  <desc id="desc">Five prompt agents in Azure AI Foundry Agent Service, all guarded by one RAI policy: a manager agent on gpt-5.6-luna and four specialist agents on gpt-5-mini for the knowledge base, web search, weather and hotels. A Magentic workflow in the local client asks for the user name and e-mail address, lets the user approve or correct the manager's plan, calls every agent, runs the weather and hotel function tools and a hotel review tool that asks the user to approve the chosen hotels, against the Visual Crossing and Google Maps Places APIs, detects the language of each question and, after every answer, summarises the trip and extracts keywords with Azure AI Language, stores the user profile, preferences, the travel history the user accepted and the conversation history in Azure Cosmos DB, gives the manager the travel history as context and converts the final answer to speech with Azure AI Speech. Every local script reads its endpoints, names and keys from Azure Key Vault. Setup scripts deploy the Azure resources to Switzerland North, build the knowledge base and create the agents.</desc>
+  <desc id="desc">Five prompt agents in Azure AI Foundry Agent Service, all guarded by one RAI policy: a manager agent on gpt-5.6-luna and four specialist agents on gpt-5-mini for the knowledge base, web search, weather and hotels. A Magentic workflow in the local client asks for the user name and e-mail address, lets the user approve or correct the manager's plan, calls every agent, runs the weather and hotel function tools and a hotel review tool that asks the user to approve the chosen hotels, against the Visual Crossing and Google Maps Places APIs, detects the language of each question and, after every answer, summarises the trip and extracts keywords with Azure AI Language, stores the user profile, preferences, the travel history the user accepted and the conversation history in Azure Cosmos DB, gives the manager the travel history as context and converts the final answer to speech with Azure AI Speech. Every local script reads its endpoints, names and keys from Azure Key Vault. Setup scripts deploy the Azure resources to Switzerland North, build the knowledge base and create the agents. An evaluation script runs the test prompts through the same agents without plan review, approves the hotels automatically and scores the final answer and every specialist with Foundry evaluators, using gpt-5.6-luna as the LLM judge.</desc>
 
   <style>
     text { font-family: "Segoe UI", -apple-system, "Helvetica Neue", Arial, sans-serif; fill: #1F2328; }
@@ -122,6 +122,16 @@
   <rect x="46" y="1077" width="48" height="16" rx="4" class="kv"/>
   <text x="108" y="1089" class="s" style="fill:#1F2328">Key Vault (all settings and keys)</text>
 
+  <!-- ============================ LEFT: evaluation ============================ -->
+  <rect x="30" y="1122" width="340" height="148" rx="12" fill="#F6F8FA" stroke="#D0D7DE"/>
+  <text x="46" y="1144" class="zone">LOCAL MACHINE · EVALUATION</text>
+  <text x="46" y="1166" class="t mono">magentic_exe_and_eval.py</text>
+  <text x="46" y="1185" class="s">the chat's 5 agents · test prompts from inputs/</text>
+  <text x="46" y="1202" class="s">no plan review · approve_hotels_automatically</text>
+  <text x="46" y="1219" class="s">Foundry evaluations · LLM judge: gpt-5.6-luna</text>
+  <text x="46" y="1236" class="s">final answer · every specialist · rules · tokens</text>
+  <text x="46" y="1256" class="s" style="fill:#1F2328">→ outputs/evaluation_travelPlannerWorkflow_*.json</text>
+
   <!-- ============================ MIDDLE: Azure ============================ -->
   <rect x="450" y="90" width="640" height="1180" rx="12" fill="#F0F7FF" stroke="#0078D4" stroke-width="1.5"/>
   <text x="466" y="114" class="zone zone-az">AZURE RESOURCE GROUP · SWITZERLAND NORTH</text>
@@ -209,8 +219,8 @@
   <text x="748" y="898" class="group" style="fill:#0060AA">Storage account</text>
   <rect x="748" y="912" width="310" height="74" rx="10" class="inner"/>
   <text x="903" y="934" class="t c">blob container: <tspan class="mono">travel-guide</tspan></text>
-  <text x="903" y="954" class="mono c" style="font-size:11px">world_city_travel_guide.md</text>
-  <text x="903" y="972" class="xs c">182 cities · copied from inputs/</text>
+  <text x="903" y="954" class="mono c" style="font-size:11px">182 × &lt;city&gt;.md</text>
+  <text x="903" y="972" class="xs c">one file per city · from inputs/travel_guide/</text>
 
   <!-- Azure AI Language -->
   <rect x="466" y="1018" width="250" height="124" rx="10" class="svc"/>
@@ -275,7 +285,7 @@
   <circle cx="1164" cy="152" r="10" class="badge"/><text x="1164" y="156" class="badge-t">1</text>
   <text x="1182" y="157" class="t mono" style="font-size:12px">resource_deployment.bicep</text>
   <text x="1162" y="177" class="s">az deployment group create (loads .env)</text>
-  <text x="1162" y="195" class="s" style="fill:#1F2328">→ resources, roles, 27 Key Vault secrets</text>
+  <text x="1162" y="195" class="s" style="fill:#1F2328">→ resources, roles, 26 Key Vault secrets</text>
 
   <rect x="1146" y="232" width="268" height="58" rx="10" class="box"/>
   <text x="1162" y="256" class="t mono" style="font-size:12px">config.yaml</text>
@@ -299,7 +309,7 @@
   <text x="1162" y="598" class="xs">→ stored in Key Vault</text>
   <text x="1162" y="622" class="s" style="fill:#1F2328">launch.json env · every script</text>
   <text x="1162" y="638" class="mono" style="font-size:10px">KEY_VAULT_URL</text>
-  <text x="1162" y="654" class="mono" style="font-size:10px">SOURCE_FILE_PATH · USER_ROLE</text>
+  <text x="1162" y="654" class="mono" style="font-size:10px">SOURCE_FOLDER_PATH · USER_ROLE</text>
 
   <rect x="1146" y="684" width="268" height="62" rx="10" class="box"/>
   <text x="1162" y="708" class="t mono" style="font-size:12px">scripts/*.sh</text>

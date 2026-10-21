@@ -21,7 +21,8 @@ The venv is `tutorials\` (git-ignored). The shell commands in `scripts/*.sh` use
 tutorials\Scripts\activate
 pip install -r requirements.txt
 
-python rag_setup.py                                  # upload the guide, build the knowledge source and knowledge base (needs SOURCE_FILE_PATH)
+python utils/split_travel_guide.py                  # split inputs/world_city_travel_guide.md into inputs/travel_guide/ (git-ignored: on a fresh clone and after a change to the guide)
+python rag_setup.py                                  # upload the guide, build the knowledge source and knowledge base (needs SOURCE_FOLDER_PATH = inputs/travel_guide, one file per city)
 python agents/<name>_agent_deployment.py             # create or update the RAI policy and a new agent version
 python agents/single_agent/travel_agent_deployment.py
 python agent_execution.py                            # interactive chat (Magentic team)
@@ -31,7 +32,7 @@ python single_agent_exe_and_eval.py                  # evaluate travelAgent
 
 - Run the agent scripts **by path**. `python -m agents.…` breaks because the `openai-agents` package is also imported as `agents`. The scripts in `agents/` add the project root to `sys.path` themselves.
 - There is no test suite, linter or build. The "tests" are the evaluation scripts. They call real models and the Foundry judge, so each case costs money. To run a subset, cut down `inputs/evaluation_prompts.yaml` or set `evaluation.evaluate_agents: false` in `config.yaml`.
-- Every script needs only `KEY_VAULT_URL` (set in the git-ignored `.vscode/launch.json`) and `az login`. All other settings and keys are Key Vault secrets. A secret name is the setting name with `-` instead of `_` (for example `PROJECT-ENDPOINT`). The Python code never reads `.env`; `.env` holds only the two third-party keys passed to the Bicep deployment.
+- Every script needs `KEY_VAULT_URL` (set in the git-ignored `.vscode/launch.json`) and `az login`. All other settings and keys are Key Vault secrets, with one exception: `search_hotels_google_maps` still reads `GOOGLE_API_KEY` from the environment (the Key Vault version is commented out in `classes/google_services.py`). `launch.json` loads it from `.env` (`envFile`); outside the debugger, load `.env` into the environment yourself, or the hotel search returns "not configured" and every hotel case fails. A secret name is the setting name with `-` instead of `_` (for example `PROJECT-ENDPOINT`). `.env` holds the two third-party keys passed to the Bicep deployment; no Python code opens it.
 
 ## Architecture
 

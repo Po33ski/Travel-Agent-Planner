@@ -77,7 +77,9 @@ evaluation:
     hotelAgent:
       - tool_call_accuracy
       - tool_output_utilization
-    # Single agent (single_agent_exe_and_eval.py); only its function tool calls are visible to the judge
+    # Single agent (single_agent_exe_and_eval.py); only its function tool calls are visible to the judge.
+    # No tool_call_accuracy: the judge sees neither the server-side tools (knowledge base, web search) nor
+    # the agent's rules, so it scored correct calls low and a call that broke the 15-day rule high. The
+    # routing is checked by expected_tools / unexpected_tools in inputs/evaluation_prompts.yaml instead.
     travelAgent:
-      - tool_call_accuracy
       - tool_output_utilization

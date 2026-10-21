@@ -12,8 +12,9 @@
 #   expected_tools     - tools that must be called (single agent only)
 #   unexpected_tools   - tools that must not be called (single agent only)
 # Tool names: get_forecast_weather, search_hotels_google_maps, knowledge_base_retrieve, web_search. The last
-# two run server-side and are seen only when the service reports their calls, so they are listed
-# only under unexpected_tools.
+# two run server-side; the service reports their calls in the response, so they are checked like the
+# function tools. They mirror the team's ragDataAgent and webDataAgent. The routing of the single agent is
+# scored only by these checks: the LLM judge does not see the server-side tools or the agent's rules.
 # Optional switch:
 #   judge_final_answer - false skips the LLM judge for the final answer. Use it when the correct
 #                        answer is a refusal: the judge does not know the assistant's scope and
@@ -24,31 +25,33 @@
 # Dates are relative on purpose: the trips within the 15-day forecast stay within it on any day the
 # evaluation runs, and the trip that must not get a forecast always ends beyond it.
 # A keyword in the language of the answer (e.g. "pogod" for a Polish answer) checks the answer language.
+# Comparison run (magentic vs single agent, 5 cases): the other cases are commented out, not removed.
+# Uncomment them for the full evaluation.
 test_cases:
   # Full plan: knowledge base, weather and hotel search; the plan has to follow the interests
   - id: lisbon_full_trip
     query: "I'm going to Lisbon for 3 days next week on a medium budget. I like food and museums. Can you plan my trip and suggest a few hotels near the city centre?"
     expected_keywords: ["Lisbon", "museum"]
     expected_agents: [ragDataAgent, weatherAgent, hotelAgent]
-    expected_tools: [get_forecast_weather, search_hotels_google_maps]
+    expected_tools: [knowledge_base_retrieve, get_forecast_weather, search_hotels_google_maps]
 
   # Destination information without dates: the weather is still mandatory (next 15 days), hotels were not requested
-  - id: rome_attractions_no_hotels
-    query: "What are the top attractions and local dishes I should not miss in Rome?"
-    expected_keywords: ["Rome"]
-    expected_agents: [ragDataAgent, weatherAgent]
-    unexpected_agents: [hotelAgent]
-    expected_tools: [get_forecast_weather]
-    unexpected_tools: [search_hotels_google_maps]
+  # - id: rome_attractions_no_hotels
+  #   query: "What are the top attractions and local dishes I should not miss in Rome?"
+  #   expected_keywords: ["Rome"]
+  #   expected_agents: [ragDataAgent, weatherAgent]
+  #   expected_tools: [knowledge_base_retrieve, get_forecast_weather]
+  #   unexpected_agents: [hotelAgent]
+  #   unexpected_tools: [search_hotels_google_maps]
 
   # Weather question with packing advice
-  - id: tokyo_weather
-    query: "What will the weather be like in Tokyo over the next 5 days and what should I pack?"
-    expected_keywords: ["Tokyo"]
-    expected_agents: [weatherAgent]
-    unexpected_agents: [hotelAgent]
-    expected_tools: [get_forecast_weather]
-    unexpected_tools: [search_hotels_google_maps]
+  # - id: tokyo_weather
+  #   query: "What will the weather be like in Tokyo over the next 5 days and what should I pack?"
+  #   expected_keywords: ["Tokyo"]
+  #   expected_agents: [weatherAgent]
+  #   unexpected_agents: [hotelAgent]
+  #   expected_tools: [get_forecast_weather]
+  #   unexpected_tools: [search_hotels_google_maps]
 
   # Request in Polish: the answer, the weather section included, has to be in Polish ("pogoda", "pogody")
   - id: krakow_hotels_polish
@@ -59,26 +62,27 @@ test_cases:
 
   # Hotel preferences and a price question: the hotels have to match the preferences, and as the search
   # has no room prices, the answer must send the user to the hotel's website instead of stating a price
-  - id: gdansk_family_hotel_price
-    query: "We're visiting Gdańsk next weekend with two small children. Can you recommend a family-friendly hotel with parking close to the old town? How much will a night cost?"
-    expected_keywords: ["Gda", "website"]
-    expected_agents: [weatherAgent, hotelAgent]
-    expected_tools: [get_forecast_weather, search_hotels_google_maps]
+  # - id: gdansk_family_hotel_price
+  #   query: "We're visiting Gdańsk next weekend with two small children. Can you recommend a family-friendly hotel with parking close to the old town? How much will a night cost?"
+  #   expected_keywords: ["Gda", "website"]
+  #   expected_agents: [weatherAgent, hotelAgent]
+  #   expected_tools: [get_forecast_weather, search_hotels_google_maps]
 
   # Two cities in one trip within the forecast range: one instruction per city for the knowledge base and the weather
-  - id: kyoto_osaka_two_cities
-    query: "Starting the day after tomorrow, I'll spend 3 days in Kyoto and then 3 days in Osaka. Can you plan both parts of the trip?"
-    expected_keywords: ["Kyoto", "Osaka"]
-    expected_agents: [ragDataAgent, weatherAgent]
-    unexpected_agents: [hotelAgent]
-    expected_tools: [get_forecast_weather]
-    unexpected_tools: [search_hotels_google_maps]
+  # - id: kyoto_osaka_two_cities
+  #   query: "Starting the day after tomorrow, I'll spend 3 days in Kyoto and then 3 days in Osaka. Can you plan both parts of the trip?"
+  #   expected_keywords: ["Kyoto", "Osaka"]
+  #   expected_agents: [ragDataAgent, weatherAgent]
+  #   expected_tools: [knowledge_base_retrieve, get_forecast_weather]
+  #   unexpected_agents: [hotelAgent]
+  #   unexpected_tools: [search_hotels_google_maps]
 
   # Trip partly beyond the 15-day forecast: no forecast at all, only the one-line note that it is not available yet
   - id: bangkok_beyond_forecast
     query: "I'm planning two weeks in Bangkok starting in 10 days. What should I see and do there?"
     expected_keywords: ["Bangkok", "forecast"]
     expected_agents: [ragDataAgent]
+    expected_tools: [knowledge_base_retrieve]
     unexpected_agents: [weatherAgent, hotelAgent]
     unexpected_tools: [get_forecast_weather, search_hotels_google_maps]
 
@@ -87,27 +91,28 @@ test_cases:
     query: "I'm flying to Istanbul in 5 days for a long weekend. Do I need a visa with a Polish passport, and what should I see there?"
     expected_keywords: ["Istanbul", "visa"]
     expected_agents: [webDataAgent, ragDataAgent, weatherAgent]
+    expected_tools: [web_search, knowledge_base_retrieve, get_forecast_weather]
     unexpected_agents: [hotelAgent]
-    expected_tools: [get_forecast_weather]
     unexpected_tools: [search_hotels_google_maps]
 
   # Country information only (entry rules): web search is the only agent to ask
-  - id: japan_visa_web_only
-    query: "I have a Polish passport. Do I need a visa for a two-week holiday in Japan?"
-    expected_keywords: ["visa", "Japan"]
-    expected_agents: [webDataAgent]
-    unexpected_agents: [ragDataAgent, weatherAgent, hotelAgent]
-    unexpected_tools: [knowledge_base_retrieve, get_forecast_weather, search_hotels_google_maps]
+  # - id: japan_visa_web_only
+  #   query: "I have a Polish passport. Do I need a visa for a two-week holiday in Japan?"
+  #   expected_keywords: ["visa", "Japan"]
+  #   expected_agents: [webDataAgent]
+  #   expected_tools: [web_search]
+  #   unexpected_agents: [ragDataAgent, weatherAgent, hotelAgent]
+  #   unexpected_tools: [knowledge_base_retrieve, get_forecast_weather, search_hotels_google_maps]
 
   # City missing from the travel guide (edge case): the knowledge base reports "not found",
   # web search fills the gap, and nothing may be invented
-  - id: lublin_not_in_guide
-    query: "I'll be in Lublin, Poland this weekend. What are the must-see places there?"
-    expected_keywords: ["Lublin"]
-    expected_agents: [ragDataAgent, webDataAgent, weatherAgent]
-    unexpected_agents: [hotelAgent]
-    expected_tools: [get_forecast_weather]
-    unexpected_tools: [search_hotels_google_maps]
+  # - id: lublin_not_in_guide
+  #   query: "I'll be in Lublin, Poland this weekend. What are the must-see places there?"
+  #   expected_keywords: ["Lublin"]
+  #   expected_agents: [ragDataAgent, webDataAgent, weatherAgent]
+  #   expected_tools: [knowledge_base_retrieve, web_search, get_forecast_weather]
+  #   unexpected_agents: [hotelAgent]
+  #   unexpected_tools: [search_hotels_google_maps]
 
   # Out of scope: the manager must refuse without delegating, the single agent without calling a tool
   - id: out_of_scope

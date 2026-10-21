@@ -92,7 +92,8 @@ def create_or_update_agent(
     # Parameters must match get_forecast_weather in classes/weather_services.py
     forecast_tool = FunctionTool(
         name="get_forecast_weather",
-        description="Get the daily weather forecast for a given location and optional date range.",
+        description="Get the daily weather forecast for a given location and optional date range. "
+        "Only the next 15 days are covered: do not call it for a trip that ends later.",
         parameters={
                 "type": "object",
                 "properties": {

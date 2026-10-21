@@ -69,8 +69,9 @@ The chat does not use `travelAgent`. It exists so that the [evaluation](#evaluat
 | `classes/speech_services.py` | `AzureSpeechService` and the `text_to_speech` helper |
 | `classes/rai_policies_services.py` | `RaiPolicyManager`: builds and deploys the RAI policy from `config.yaml` |
 | `utils/utils.py` | `add_todays_date`, which puts today's date in front of every task, and helpers for normalising weather API responses |
+| `utils/split_travel_guide.py` | Splits `inputs/world_city_travel_guide.md` into one file per city in `inputs/travel_guide/`, the input of `rag_setup.py` |
 | `utils/agent_middleware.py` | Middleware shared by the run scripts: `log_tool_calls`, `log_manager_decisions`, `log_agent_replies`, `BlockedReplyMonitor` and `drop_foreign_tool_contents` |
-| `inputs/` | Source documents for the knowledge base (`world_city_travel_guide.md`, `.pdf`) and the test prompts for the evaluation (`evaluation_prompts.yaml`) |
+| `inputs/` | Source documents for the knowledge base: `travel_guide/` (the guide split into one file per city, uploaded by `rag_setup.py`) and the full guide it was split from (`world_city_travel_guide.md`, `.pdf`) and the test prompts for the evaluation (`evaluation_prompts.yaml`) |
 | `outputs/` | Audio file with the spoken final answer and the evaluation reports (`evaluation_<workflow>_<timestamp>.json`) |
 | `scripts/` | Step-by-step CLI commands for environment setup, deployment and deletion |
 | `docs/` | The two architecture diagrams shown at the top of this README |
@@ -160,7 +161,7 @@ Every script reads its endpoints, names and keys from Key Vault when it starts. 
 | Variable | Used by | Required | Description |
 |---|---|---|---|
 | `KEY_VAULT_URL` | all scripts | yes | `KEY_VAULT_URL` output of the deployment, for example `https://<prefix>-kv.vault.azure.net/` |
-| `SOURCE_FILE_PATH` | `rag_setup.py` | yes | `inputs/world_city_travel_guide.md` |
+| `SOURCE_FOLDER_PATH` | `rag_setup.py` | yes | `inputs/travel_guide`: every `.md` file in it is uploaded |
 | `KNOWLEDGE_SOURCE_NAME` | `rag_setup.py` | no | Default `travel-guide-ks` |
 | `USER_ROLE` | `agent_execution.py` | no | Stored in the profile of a new user, for example `Traveler` |
 
@@ -184,10 +185,13 @@ The template gives your account the `Key Vault Secrets User` role. Role assignme
 ### 6. Build the knowledge base
 
 ```powershell
+python utils/split_travel_guide.py   # on a fresh clone and after a change to inputs/world_city_travel_guide.md
 python rag_setup.py
 ```
 
-This uploads the travel guide to Blob Storage, creates the knowledge source (Azure AI Search then generates the data source, skillset, index and indexer), waits for ingestion to finish (up to 15 minutes), and creates the knowledge base.
+`split_travel_guide.py` writes one file per city to `inputs/travel_guide/` and replaces what was there, so cities removed from the guide disappear. It writes nothing if the files do not add up to the guide. The files are UTF-8 with a BOM: without it the indexer guesses the encoding, and it read two of the short files (Kraków, Florianópolis) as GBK. `inputs/` is git-ignored, so the city files are not in the repository: a fresh clone has to run the split first. The files already tracked there (the full guide, the PDF and `evaluation_prompts.yaml`) stay tracked.
+
+This uploads every file of the travel guide folder to Blob Storage and deletes blobs that are no longer in the folder, creates the knowledge source (Azure AI Search then generates the data source, skillset, index and indexer), runs the indexer and waits for that run (up to 30 minutes), deletes the chunks of removed blobs, and creates the knowledge base. It stops before the knowledge base if the run had errors or truncated a file.
 
 ### 7. Deploy the agents
 
@@ -453,13 +457,17 @@ The single agent `travelAgent` has the first four tools.
 
 `FoundryIQService` (`classes/foundry_iq_services.py`) builds the knowledge base in five steps:
 
-1. `upload_blob()` uploads the source file (`inputs/world_city_travel_guide.md`) to the blob container with the correct content type.
-2. `create_blob_knowledge_source()` creates an Azure Blob knowledge source. Azure AI Search then generates `<name>-datasource`, `-skillset`, `-index` and `-indexer` automatically. Ingestion uses `gpt-5-mini` and `text-embedding-3-small` in `MINIMAL` content extraction mode, so no built-in AI enrichment skills are needed.
+1. `upload_blob()` uploads one source file to the blob container with the correct content type.
+2. `create_blob_knowledge_source()` creates an Azure Blob knowledge source. Azure AI Search then generates `<name>-datasource`, `-skillset`, `-index` and `-indexer` automatically. Ingestion uses `text-embedding-3-small` in `MINIMAL` content extraction mode with image verbalization disabled, so the skillset has only the split and embedding skills and no billable AI enrichment. `gpt-5-mini` is used only by the knowledge base, for query planning.
 3. `wait_for_ingestion()` polls the knowledge source status every 15 s, for up to 900 s. It fails if any document could not be indexed.
 4. `create_knowledge_base()` creates the knowledge base with `EXTRACTIVE_DATA` output mode (it returns raw chunks and the agent writes the answer) and automatic retrieval reasoning effort.
 5. `create_mcp_tool()` returns an `MCPTool` pointing at the knowledge base MCP endpoint (API version `2026-08-01-preview`). It is restricted to `knowledge_base_retrieve`, with `require_approval="never"` because the tool is read-only, and it authenticates through the `RemoteTool` project connection from the Bicep template.
 
-`rag_setup.py` runs steps 1–4. Step 5 runs in `agents/rag_data_agent_deployment.py`.
+`rag_setup.py` does not use `setup()` or `wait_for_ingestion()`. It calls `upload_blob()` for every file in `SOURCE_FOLDER_PATH` (`inputs/travel_guide`, 182 files), deletes blobs that are not in the folder, and calls `create_blob_knowledge_source()`. Then it starts the indexer itself and waits for that run on the indexer status: after an update of an existing knowledge source, its status still shows the previous synchronisation, so `wait_for_ingestion()` would return at once. It prints every error and warning of the run and stops on errors and on a `Truncated` warning. Then it deletes the index chunks of blobs that no longer exist, because the generated data source has no deletion detection, and calls `create_knowledge_base()`. Step 5 runs in `agents/rag_data_agent_deployment.py`.
+
+**Why one file per city.** The generated skillset splits text into chunks of 2,000 characters with a 200-character overlap and ignores headings. The search service is on the free tier, which extracts at most 262,144 characters from one document. The single guide file (500,872 characters) was cut at Luang Prabang, so 94 of the 182 cities were not in the index; the indexer reported it only as a warning. The split files (1.7–4.3k characters) stay far below the limit, a chunk never mixes two cities, and every section heading repeats the city name (`### Kraków: Getting Around`), so each chunk names its city. The files are generated from `inputs/world_city_travel_guide.md` by `utils/split_travel_guide.py`; after a change to the full guide, run it again before `rag_setup.py`.
+
+`disable_image_verbalization` is `True` and the knowledge source has no chat model (the service rejects one when verbalization is disabled). With verbalization on, the indexer extracts images (`imageAction`), which makes the skillset billable: without an AI services resource attached, the free tier enriches only 20 documents a day, and the indexer stopped after 20 of the 182 city files. Both settings can be set only when the knowledge source is created; to change them, delete the knowledge base and the knowledge source and run `rag_setup.py` again.
 
 ### Web search
 
@@ -677,15 +685,17 @@ Only agent evaluators are used, plus `groundedness` for the knowledge base agent
 | `task_completion` | final answer, `webDataAgent` | The answer delivers a usable result that meets every requirement of the request | pass / fail |
 | `intent_resolution` | final answer, `webDataAgent` | The answer understands and addresses what the user wants | 1–5, passes at 3 |
 | `groundedness` | `ragDataAgent` | Every fact of the reply is backed by what the tools returned; nothing is invented | 1–5, passes at 3 |
-| `tool_call_accuracy` | `weatherAgent`, `hotelAgent`, `travelAgent` | The right function tools are called with the right parameters, without unnecessary calls | 1–5, passes at 3 |
+| `tool_call_accuracy` | `weatherAgent`, `hotelAgent` | The right function tools are called with the right parameters, without unnecessary calls | 1–5, passes at 3 |
 | `tool_output_utilization` | `weatherAgent`, `hotelAgent`, `travelAgent` | The reply uses the tool results correctly | pass / fail |
 
 An agent that is missing from `agent_evaluators` is not evaluated, and tool evaluators are skipped for an agent without function tools. Foundry has limited support for the tool evaluators and `groundedness` on web search, so `webDataAgent` is scored only on its behaviour.
 
+`travelAgent` gets no `tool_call_accuracy`. Its judge sees only the two function tools, not the knowledge base and web search, and not the agent's rules, so it scored correct choices low (a visa question "no tool could answer", the mandatory weather call "unnecessary") and a call that broke the 15-day forecast rule 5/5. The team's specialists do not have this problem: the manager's instruction already names what to fetch, so the judge only checks the parameters. The single agent's tool choice is checked by the rule checks `expected_tools` and `unexpected_tools`, which list all four tools.
+
 ### What the judge sees
 
 - **Final answer of the workflow:** one item with the test prompt (today's date included) and the text of the final answer. The judge sees no tool calls, no specialist replies and no system prompt, so it cannot check the facts of the final answer.
-- **Final answer of the single agent:** `evaluate_agent` builds the item from the agent's whole response, so the judge also sees its function tool calls and results and the tool definitions. With more information it judges more strictly than for the workflow: keep this in mind when the two final-answer scores are compared.
+- **Final answer of the single agent:** the same as for the workflow, the test prompt and the text of the final answer. `evaluate_agent_final_answer` passes `evaluate_agent` only the answer text, without the agent: given the agent and its whole response, `evaluate_agent` would also show the judge the function tool calls and results and the tool definitions, and judge the single agent more strictly than the workflow. The tool calls are scored in the agent evaluation.
 - **Agents:** one item per agent call, with the instruction the agent received (the user messages of its conversation, in the team the manager's instruction), its reply with its function tool calls and results, its function tools and a context.
 - **Context:** the text of everything the agent's tools returned, function tool results and MCP results such as the knowledge base passages of `knowledge_base_retrieve`. `FoundryEvals` does not pass MCP results to the judge in the conversation, so the context is the only way the judge sees them, and `groundedness` compares the reply with it. Web search results are not included: they carry links, not the text of the pages. When the tools returned nothing, the context says so, and a reply with facts then fails `groundedness`.
 - **Never seen:** the calls of the server-side tools (knowledge base, web search) and the agents' system prompts, which live in Foundry. This is why the out-of-scope test case skips the judge: it does not know the assistant's scope.
@@ -694,7 +704,7 @@ An agent that is missing from `agent_evaluators` is not evaluated, and tool eval
 
 The Foundry evaluators run in the Foundry project, not locally: the script uploads the items with `FoundryEvals` and waits for the evaluation run, which calls the judge deployment. The runs are also listed in the Foundry portal under **Evaluations**.
 
-- The final answer goes through the built-in `evaluate_workflow` (workflow) or `evaluate_agent` (single agent).
+- The final answer goes through the built-in `evaluate_workflow` (workflow) or `evaluate_agent` (single agent, with the answer text only).
 - The agents go through `_evaluate_agent_items`, one Foundry evaluation run per agent. `evaluate_workflow` cannot be used here: it applies one set of evaluators to every agent and passes no context. Instead, `evaluate_agents` takes every specialist call from the workflow events (`executor_completed` events of the agent executors) and builds the items itself (`_agent_item`). The single agent's work goes the same way, so both reports have the same format.
 - A failed evaluation is recorded in the report instead of stopping the script.
 - Nobody answers during the evaluation: the workflow is built without plan review, and `hotelAgent`'s review tool `ask_user_about_hotels` is replaced by `approve_hotels_automatically`, which approves every choice. The review call still shows up among `hotelAgent`'s tool calls.
@@ -723,7 +733,7 @@ Each script writes `outputs/evaluation_<name>_<timestamp>.json`, where the name 
 
 The `passed` / `failed` counts of an evaluation count *items*, not evaluators: an item passes only when every evaluator passes. The scores per evaluator are in `items[].scores[]` and in `summary`.
 
-The single agent's records also hold `called_tools`: the tools found in the agent's response and how often each was called. Function tools (`get_forecast_weather`, `search_hotels_google_maps`) are always there. The server-side tools (`knowledge_base_retrieve`, `web_search`) appear only when the service reports their calls, so the test prompts list them only under `unexpected_tools`. For the single agent, the routing checks therefore cannot confirm that the knowledge base or web search was used.
+The single agent's records also hold `called_tools`: the tools found in the agent's response and how often each was called. Function tools (`get_forecast_weather`, `search_hotels_google_maps`) are always there. The server-side tools (`knowledge_base_retrieve`, `web_search`) appear when the service reports their calls, which it did in the runs of 2026-10-18, so the test prompts list them under `expected_tools` too, where the team's cases expect `ragDataAgent` or `webDataAgent`.
 
 The two reports have the same format. Compare the metrics in `summary.final_answer`, `summary.rule_checks` and `summary.tokens`.
 

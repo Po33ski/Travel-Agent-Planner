@@ -8,6 +8,7 @@ from agent_framework import (
     AgentExecutor,
     AgentExecutorResponse,
     AgentMiddleware,
+    AgentResponse,
     EvalItem,
     FunctionTool,
     Message,
@@ -228,16 +229,19 @@ class EvaluateService:
         return await self._evaluate_agent_items(items_by_agent, eval_name)
 
     # ------------------------------------------------------------------ single agent evaluation
-    async def evaluate_agent_final_answer(self, agent, query, response, eval_name):
+    async def evaluate_agent_final_answer(self, query, response, eval_name):
         """Score the single agent's final answer with the Foundry evaluators (LLM judge).
 
         Same evaluators and same input as evaluate_final_answer for a workflow (the request
-        and the answer, no system prompt), so the two can be compared.
+        and the answer text, no system prompt, no tool calls and no tool definitions), so the
+        two can be compared. The agent's tool calls are scored by evaluate_agent_work.
         """
+        # evaluate_workflow judges only the text of the final output; given the agent and its full
+        # response, evaluate_agent would also show the judge the tool calls, results and definitions
+        answer = AgentResponse(messages=[Message("assistant", [response.text])])
         results = await evaluate_agent(
-            agent=agent,
             queries=query,
-            responses=response,
+            responses=answer,
             evaluators=self._foundry_evals(self.final_answer_evaluators),
             eval_name=eval_name,
         )
@@ -407,7 +411,7 @@ class EvaluateService:
         eval_name = f"{agent.name} - {test_case['id']}"
         if test_case.get("judge_final_answer", True):
             record["final_answer_evaluation"] = await self._run_evaluation(
-                self.evaluate_agent_final_answer(agent, task, response, f"{eval_name} - final answer")
+                self.evaluate_agent_final_answer(task, response, f"{eval_name} - final answer")
             )
         else:
             record["final_answer_evaluation"] = self._skipped_evaluation()
