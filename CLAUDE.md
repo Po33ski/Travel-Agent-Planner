@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `README.md` is the detailed reference: infrastructure, every agent's behaviour rules, tools, the evaluation and clean-up. Keep it in sync when behaviour changes. This file covers what you need to work on the code.
 
-`CHANGELOG.md` is the project log: why things changed, the decisions taken and what is still open. Before you start, read its latest entries. After a change to behaviour, configuration, infrastructure or the evaluation, add an entry at the top in the format given there.
+`CHANGELOG.md` is the project log: why things changed, the decisions taken and what is still open. Before you start, read its latest entries. After a change to behaviour, configuration, infrastructure or the evaluation, add an entry at the top in the format given there. The file is git-ignored on purpose: it is a local log and is not part of the repository, so a fresh clone has none.
 
 ## What this is
 

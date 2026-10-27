@@ -20,7 +20,6 @@ guardrails:
       enabled: true
       action: "Block"
     protected_materials:
-      code: true
       text: true
       action: "Block"
 

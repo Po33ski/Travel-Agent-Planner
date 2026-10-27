@@ -781,7 +781,7 @@ guardrails:
       violence: "Low"
       action: "Block"
     profanity:                  { enabled: true, action: "Block" }
-    protected_materials:        { code: true, text: true, action: "Block" }
+    protected_materials:        { text: true, action: "Block" }
 ```
 
 ### Policy properties
@@ -801,9 +801,8 @@ guardrails:
 | Violence | `Violence` | Prompt and completion |
 | Profanity | `Profanity` | Prompt and completion |
 | Protected material (text) | `Protected Material Text` | Prompt and completion |
-| Protected material (code) | `Protected Material Code` | Prompt and completion |
 
-For each control, `enabled` switches the filter on or off, and `action: "Block"` sets `blocking=true`.
+For each control, `enabled` switches the filter on or off, and `action: "Block"` sets `blocking=true`. A severity value other than `Low`, `Medium` or `High` stops the deployment with an error.
 
 ### Severity levels for content harms
 
@@ -818,6 +817,8 @@ The `hate`, `sexual`, `self_harm` and `violence` values in `config.yaml` are tra
 ### Changing the guardrail
 
 Edit `config.yaml` and run the agent deployment scripts again. The policy is created or updated under the same name and attached to a new version of each agent.
+
+The agents refer to the policy by its resource ID, so all six share one policy. Running any one deployment script after a change to `config.yaml` changes the guardrail of every agent at once, also of the agents that were not deployed again.
 
 ---
 
