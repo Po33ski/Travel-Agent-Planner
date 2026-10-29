@@ -4,6 +4,7 @@ azure-ai-projects>=2.0.0
 azure-core
 agent-framework>=1.13.0
 agent-framework-foundry
+azure-monitor-opentelemetry
 requests
 azure-storage-blob
 azure-search-documents>=12.1.0b2

@@ -56,7 +56,7 @@ The chat does not use `travelAgent`. It exists so that the [evaluation](#evaluat
 | `magentic_exe_and_eval.py` | Runs the test prompts through the Magentic workflow, evaluates every run and saves the report in `outputs/` |
 | `single_agent_exe_and_eval.py` | The same evaluation for the single agent `travelAgent` |
 | `agents/single_agent/` | Deployment script and config file (agent name and system prompt) of the single agent `travelAgent` |
-| `config.yaml` | Guardrail (RAI) settings shared by all agents, profile TTL for Cosmos DB, the travel history limits, the NLP sentiment threshold and the evaluation settings |
+| `config.yaml` | Guardrail (RAI) settings shared by all agents, profile TTL for Cosmos DB, the travel history limits, the tracing settings, the NLP sentiment threshold and the evaluation settings |
 | `classes/evaluate_services.py` | `EvaluateService`: Foundry evaluators for the final answer and for every agent, rule checks, token counting and the report, for a workflow or a single agent. `TokenUsageMiddleware`: records the token usage of every agent call |
 | `classes/secret_manager_services.py` | `SecretManager`: reads secrets from Key Vault and caches them in memory |
 | `classes/cosmos_memory_services.py` | `CosmosMemory`: user profiles, preferences, travel history and conversation history in Cosmos DB |
@@ -71,6 +71,7 @@ The chat does not use `travelAgent`. It exists so that the [evaluation](#evaluat
 | `utils/utils.py` | `add_todays_date`, which puts today's date in front of every task, and helpers for normalising weather API responses |
 | `utils/split_travel_guide.py` | Splits `inputs/world_city_travel_guide.md` into one file per city in `inputs/travel_guide/`, the input of `rag_setup.py` |
 | `utils/agent_middleware.py` | Middleware shared by the run scripts: `log_tool_calls`, `log_manager_decisions`, `log_agent_replies`, `BlockedReplyMonitor` and `drop_foreign_tool_contents` |
+| `utils/observability.py` | `enable_tracing`: sends the OpenTelemetry traces of the chat or an evaluation run to Application Insights (see [Tracing](#tracing)) |
 | `inputs/` | Source documents for the knowledge base: `travel_guide/` (the guide split into one file per city, uploaded by `rag_setup.py`) and the full guide it was split from (`world_city_travel_guide.md`, `.pdf`) and the test prompts for the evaluation (`evaluation_prompts.yaml`) |
 | `outputs/` | Audio file with the spoken final answer and the evaluation reports (`evaluation_<workflow>_<timestamp>.json`) |
 | `scripts/` | Step-by-step CLI commands for environment setup, deployment and deletion |
@@ -302,6 +303,10 @@ To use another region, change `--location` in `az group create`. Existing resour
 | `databaseName` | `<prefix>-cosmosdb` | Cosmos DB database |
 | `containerName` | `<prefix>-container` | Cosmos DB container with the user profiles |
 | `keyVaultName` | first 21 characters of the prefix + `-kv` (max 24 chars) | Key Vault |
+| `logAnalyticsName` | `<prefix>-law` | Log Analytics workspace that stores the traces |
+| `appInsightsName` | `<prefix>-appi` | Application Insights resource |
+| `appInsightsConnectionName` | `<appInsightsName>-connection` | Project connection to Application Insights |
+| `logAnalyticsDailyQuotaGb` | `'0.15'` | Daily ingestion cap of the workspace in GB. A string, because Bicep has no decimal numbers |
 | `location` | resource group location | Azure region for all resources |
 
 ### Resources
@@ -321,6 +326,9 @@ To use another region, change `--location` in `az group create`. Existing resour
 | **Azure AI Language** (kind `TextAnalytics`, SKU `F0`) | Free tier, custom subdomain, key auth. Detects the language of the user's questions, summarises each trip and extracts its keywords. |
 | **Azure Cosmos DB** (NoSQL API) | Free tier, `Session` consistency, single region. The database has 1,000 RU/s of shared throughput (covered by the free tier). The container is partitioned by `/userId`, has a default TTL of 90 days and a composite index on `userId` and `last_updated`. |
 | **Azure Key Vault** | `standard` SKU, Azure RBAC authorization, soft delete for 7 days. Purge protection is off so that the vault name can be reused after a clean-up; it is commented out in the template and should be enabled in production. Holds all settings and keys (see below). |
+| **Log Analytics workspace** | `PerGB2018` (pay-as-you-go), 30 days retention (included in the ingestion price), daily ingestion cap of 0.15 GB. No fixed cost: ingestion is billed per GB (3.29 USD in Switzerland North in October 2026) after the free 5 GB a month per billing account. 0.15 GB a day is about 4.5 GB a month, so the cap keeps the project in the free allowance as long as no other workspace of the billing account uses it. When the cap is reached, the workspace collects nothing until the next day (UTC). |
+| **Application Insights** | Workspace-based (`IngestionMode: LogAnalytics`): its data is stored and billed in the workspace above, the resource itself costs nothing. |
+| **Application Insights connection** (`AppInsights`, `ApiKey`) | Project connection that holds the Application Insights connection string. `FoundryAgent.configure_azure_monitor()` reads it (the SDK accepts one such connection per project), and the Foundry portal shows the project's traces under **Tracing**. Created after the knowledge base connection, one connection write at a time. |
 
 ### Key Vault secrets
 
@@ -408,6 +416,119 @@ Details worth knowing:
 - **Agents share text answers only.** Magentic passes every agent's reply to the other agents, including the function call and its raw result. An agent that already has a server-side conversation would then send a tool result without the matching call, and the service rejects it with *"No tool call found for function call output"*. The `drop_foreign_tool_contents` middleware (`utils/agent_middleware.py`) on every agent removes these tool contents from the incoming messages. This also keeps raw tool output out of the other agents' context.
 - **Refused or blocked answers.** A reply that the model refuses, or that the content filter cuts off on the output side, arrives without an error: the text ends early and a refusal such as *"I'm sorry, but I cannot assist with that request."* takes its place. `BlockedReplyMonitor` (`utils/agent_middleware.py`) on every agent detects this and prints `[GUARDRAIL]` lines with the refusal, the finish reason, the response status and any content filter results the service reported. No filter results usually means the model refused on its own. A blocked *input* is different: it raises `ChatClientContentFilterException`, which the chat reports as *"blocked by the content safety policy"*.
 - **Console log.** `log_tool_calls` prints every local function call and a truncated result as `[TOOL] -> ...` / `[TOOL] <- ...`. `log_manager_decisions` prints the manager's decision at the start of every round as `[MANAGER] ...`: the next agent, the reason and the instruction, or that the request is satisfied. `log_agent_replies` prints what each specialist sent back as `[AGENT] <name> replied: ...`, truncated to 1,500 characters. All three are in `utils/agent_middleware.py`.
+
+### Tracing
+
+The console log disappears when the script ends. For a record of every run, the chat and both evaluation scripts send OpenTelemetry traces to **Application Insights**: one trace per workflow run, with the manager's calls, every specialist call, every local tool call and the Azure SDK and HTTP calls below them, each with its duration, token counts and errors.
+
+- **Set-up.** `enable_tracing()` (`utils/observability.py`) is called once per process, at the start of the async run. It calls `FoundryAgent.configure_azure_monitor()` on one agent: the method reads the connection string from the project's Application Insights connection (see [Resources](#resources)) and sets up OpenTelemetry for the whole process, so this one call covers every agent and every workflow.
+- **Where to look.** In the Foundry portal under **Tracing** (project level), or in Application Insights under *Agents* and *Transaction search*, and with KQL in the Log Analytics workspace.
+- **Chat and evaluation apart.** Each script sends its traces under its own service name (`cloud_RoleName`): `travel-planner-chat`, `travel-planner-eval-magentic` and `travel-planner-eval-single-agent` (`observability.service_names` in `config.yaml`). Filter by it, so test runs do not mix with real conversations.
+- **Content.** `observability.enable_sensitive_data: false` keeps the structure, durations, token counts and errors. `true` also records the prompts, answers and tool arguments and results, i.e. what the user typed: useful for debugging and demos, and more data per run.
+- **Never in the way.** When tracing cannot be set up (`observability.enabled: false`, no project connection, `azure-monitor-opentelemetry` not installed), the script prints a `[TRACING]` line and runs without it. A started script prints `[TRACING] Traces go to Application Insights as '<service name>'.` when it works.
+- **Cost.** The traces are billed as Log Analytics ingestion; the daily cap of the workspace keeps them in the free allowance (see [Resources](#resources)). Without sensitive data a team run is small; with it, a run can be around a megabyte, mostly the manager's growing conversation and the hotel results.
+- **Server-side tools.** The knowledge base (MCP) and web search run in Foundry. The client traces show the agent call that used them; what Foundry reports about the tools themselves has not been checked yet.
+
+#### What a trace contains
+
+A trace is a tree of **spans**: timed operations, each with its parent. Agent Framework names its spans after the OpenTelemetry GenAI conventions: the operation, then the agent, model or tool. The span names below come from the installed `agent-framework` 1.19 and `agent-framework-orchestrations` 1.2. The nesting is simplified and has not been checked on a real run yet.
+
+A message to the team, after the plan was approved:
+
+```text
+workflow.run                                   the Magentic workflow, one per workflow.run() call
+├─ executor.process magentic_orchestrator      the orchestrator's turn
+│  └─ invoke_agent managerAgent                 plan, progress check or final answer
+│     └─ chat <model>                           the model call, with its token counts
+├─ executor.process ragDataAgent               a specialist's turn
+│  └─ invoke_agent ragDataAgent
+│     └─ chat <model>                           the knowledge base (MCP) runs inside this call, in Foundry
+└─ executor.process weatherAgent
+   └─ invoke_agent weatherAgent
+      ├─ chat <model>                           the model asks for get_forecast_weather
+      ├─ execute_tool get_forecast_weather      the local function tool
+      │  └─ GET weather.visualcrossing.com      the HTTP call below it
+      └─ chat <model>                           the model writes the reply from the tool result
+```
+
+Between these spans the workflow also writes `message.send` and `edge_group.process` spans: the messages between the orchestrator and the participants. The single agent has no workflow spans: a test case is one `invoke_agent travelAgent` with several `chat` and `execute_tool` spans below it.
+
+| Span | Comes from | Main attributes |
+|---|---|---|
+| `workflow.run` (and `workflow.build`) | the Magentic workflow | `workflow.id`, `workflow.name` |
+| `executor.process <id>` | one turn of the orchestrator (`magentic_orchestrator`) or of an agent (its name) | `executor.id`, `executor.type`, `message.type` |
+| `invoke_agent <agent>` | one run of a `FoundryAgent` | `gen_ai.agent.name`, `gen_ai.agent.id`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens` (all model calls of this run together) |
+| `chat <model>` | one model call of that agent | `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.usage.*` (input, output, cached input, reasoning), `gen_ai.response.finish_reasons` |
+| `execute_tool <tool>` | one local function tool call | `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.tool.type` (`function`) |
+| HTTP and Azure SDK spans | the Azure Monitor distro instruments `requests`, `urllib3` and the Azure SDKs | the method and URL of the call, the status code; Cosmos DB, Key Vault and Language calls appear the same way |
+
+Every span carries the script's service name (`cloud_RoleName`, see above) and the trace id that ties the tree together.
+
+With `enable_sensitive_data: true` the spans also hold the content: `gen_ai.input.messages` and `gen_ai.output.messages` on `invoke_agent` and `chat`, and `gen_ai.tool.call.arguments` and `gen_ai.tool.call.result` on `execute_tool`. Agent Framework records the tool arguments and results only because it opts into the newer GenAI conventions by default (`OTEL_SEMCONV_STABILITY_OPT_IN`).
+
+Besides the spans, the framework records two metrics: `gen_ai.client.token.usage` (tokens per call, split into input and output) and `gen_ai.client.operation.duration` (seconds per call).
+
+#### Where the data lands
+
+Application Insights stores everything in the Log Analytics workspace. Use these tables in **Logs** (KQL):
+
+| Table | Holds |
+|---|---|
+| `AppDependencies` | The spans above. Spans that run inside the process (`workflow.run`, `invoke_agent`, `execute_tool`) have the type `InProc`, HTTP calls have `HTTP`. The span name is in `Name`, its attributes in `Properties`, the trace id in `OperationId`, the service name in `AppRoleName`, the duration in `DurationMs`. |
+| `AppMetrics` | `gen_ai.client.token.usage` and `gen_ai.client.operation.duration` |
+| `AppTraces` | Python log records at `WARNING` and above, for example the framework's tool-loop warnings. The `[TOOL]` / `[MANAGER]` console lines are `print` output and do not go there. |
+| `AppExceptions` | Exceptions recorded on a span |
+
+#### Example queries
+
+Tokens, calls and average duration per agent in the chat:
+
+```kusto
+AppDependencies
+| where AppRoleName == "travel-planner-chat" and Name startswith "invoke_agent"
+| extend agent = tostring(Properties["gen_ai.agent.name"]),
+         input_tokens = toint(Properties["gen_ai.usage.input_tokens"]),
+         output_tokens = toint(Properties["gen_ai.usage.output_tokens"])
+| summarize calls = count(), input_tokens = sum(input_tokens), output_tokens = sum(output_tokens),
+            avg_seconds = round(avg(DurationMs) / 1000, 1) by agent
+| order by input_tokens desc
+```
+
+The team against the single agent in the evaluation (tokens per test case):
+
+```kusto
+AppDependencies
+| where AppRoleName startswith "travel-planner-eval" and Name startswith "invoke_agent"
+| extend tokens = toint(Properties["gen_ai.usage.input_tokens"]) + toint(Properties["gen_ai.usage.output_tokens"])
+| summarize tokens = sum(tokens), agent_calls = count() by AppRoleName, OperationId
+| summarize runs = count(), avg_tokens = avg(tokens), avg_agent_calls = avg(agent_calls) by AppRoleName
+```
+
+Local tool calls and their duration:
+
+```kusto
+AppDependencies
+| where Name startswith "execute_tool"
+| summarize calls = count(), avg_ms = avg(DurationMs) by tool = tostring(Properties["gen_ai.tool.name"]), AppRoleName
+```
+
+All spans of one trace, in order (the trace id is in `OperationId` of any span of the run):
+
+```kusto
+AppDependencies
+| where OperationId == "<trace id>"
+| project TimeGenerated, Name, DurationMs, agent = tostring(Properties["gen_ai.agent.name"]), Success
+| order by TimeGenerated asc
+```
+
+#### Reading the traces correctly
+
+- **Count tokens on one level only.** An `invoke_agent` span holds the sum of its `chat` spans. Sum either the `invoke_agent` spans (per agent) or the `chat` spans (per model call), never both. The report of the evaluation counts the same tokens in `TokenUsageMiddleware`, so the two should agree.
+- **Plan review splits a message into several traces.** Each `workflow.run()` call starts a new trace: the first ends at the plan, every correction adds one, and the answer comes in the trace of the last call. The evaluation has no plan review, so there a test case is one trace. The calls after the workflow (Cosmos DB, Language, Speech) are separate traces too.
+- **A tool error is not a failed span.** The tools return `{"error": ...}` instead of raising an exception, so `execute_tool` stays `Success = true`. The error is visible only in `gen_ai.tool.call.result`, i.e. with sensitive data on, or in the agent's reply.
+- **No spans for the server-side tools.** `knowledge_base_retrieve` and `web_search` run in Foundry, so the client has no `execute_tool` span for them: their time is part of the `chat` span of the agent that used them.
+- **Before `enable_tracing()` nothing is traced.** The Key Vault reads at the start of every script happen before the call and do not appear.
+- **⚠️ The Visual Crossing API key in the traces.** The weather tool sends its key as a query parameter (`?key=...`), and the HTTP spans record the full URL. Unless the `requests` and `urllib3` instrumentations are switched off or the key moves out of the URL, the key is stored in plain text in the workspace (`AppDependencies`, column `Data`). The Google key is sent in a header and is not recorded. Not checked on a real run yet.
 
 ### Human in the loop
 
@@ -707,6 +828,7 @@ The Foundry evaluators run in the Foundry project, not locally: the script uploa
 - The final answer goes through the built-in `evaluate_workflow` (workflow) or `evaluate_agent` (single agent, with the answer text only).
 - The agents go through `_evaluate_agent_items`, one Foundry evaluation run per agent. `evaluate_workflow` cannot be used here: it applies one set of evaluators to every agent and passes no context. Instead, `evaluate_agents` takes every specialist call from the workflow events (`executor_completed` events of the agent executors) and builds the items itself (`_agent_item`). The single agent's work goes the same way, so both reports have the same format.
 - A failed evaluation is recorded in the report instead of stopping the script.
+- The runs are traced like the chat, under their own service names (see [Tracing](#tracing)). Tracing does not replace `TokenUsageMiddleware`: the report keeps its own token counts, and the traces can be used to check them.
 - Nobody answers during the evaluation: the workflow is built without plan review, and `hotelAgent`'s review tool `ask_user_about_hotels` is replaced by `approve_hotels_automatically`, which approves every choice. The review call still shows up among `hotelAgent`'s tool calls.
 
 **Token counting.** `TokenUsageMiddleware` is added to every `FoundryAgent`. After each agent call it reads `usage_details` from the response and adds it to the totals of that agent. The Magentic manager is called by the orchestrator and does not appear in the workflow events as an agent, so the middleware is the only place that sees its usage. The judge's tokens are taken from the evaluation results and counted separately.
@@ -794,7 +916,7 @@ guardrails:
 | Control | Filter name(s) in the policy | Applied to |
 |---|---|---|
 | Jailbreak | `Jailbreak` | Prompt |
-| Indirect prompt injection | `Indirect Attack` | Prompt |
+| Indirect prompt injection | `Indirect Attack` | Prompt (the agent's input only, not tool results: see below) |
 | Hate | `Hate` | Prompt and completion |
 | Sexual | `Sexual` | Prompt and completion |
 | Self-harm | `Selfharm` | Prompt and completion |
@@ -803,6 +925,27 @@ guardrails:
 | Protected material (text) | `Protected Material Text` | Prompt and completion |
 
 For each control, `enabled` switches the filter on or off, and `action: "Block"` sets `blocking=true`. A severity value other than `Low`, `Medium` or `High` stops the deployment with an error.
+
+### What the guardrail does not cover: tool calls
+
+Foundry checks an agent at four intervention points: *User input*, *Tool call* (preview), *Tool response* (preview) and *Output*. The policy has filters only for `Prompt` and `Completion`, which are the agent's input and its reply. An agent's guardrail fully replaces the guardrail of its model, so the arguments an agent sends to a tool and what the tool returns are **not checked**.
+
+Adding tool call and tool response controls would not cover this project's tools either. Foundry moderates only tools that support it (Azure AI Search, Azure Functions, OpenAPI, SharePoint, Fabric Data Agent, Bing Grounding, Bing Custom Search and Browser Automation):
+
+| Tool | Runs | Covered by tool controls |
+|---|---|---|
+| `get_forecast_weather`, `search_hotels_google_maps`, `ask_user_about_hotels` | locally (function tools) | No |
+| `knowledge_base_retrieve` (Foundry IQ MCP) | server-side | No (MCP is not in the list) |
+| `web_search` (`WebSearchTool`) | server-side | Not documented (only Bing Grounding is listed) |
+
+Locally, `log_tool_calls` only prints the calls and `BlockedReplyMonitor` looks at the finished reply, so nothing checks the tools there either.
+
+What this means for the filters:
+
+- **Indirect Attack** detects attacks hidden in documents. For agents, Foundry scans documents at the *Tool response* point, which this policy does not have. On the agent's input it sees only the user's request or the manager's instruction, which `Jailbreak` already checks, so it adds little protection. Untrusted text from web search results, knowledge base passages and Google Maps reviews reaches the model unchecked.
+- A specialist's reply becomes part of the manager's input, so the manager's input filters see what the specialist made of the tool results, not the results themselves.
+
+**In production** I would add Azure AI Content Safety and a local function middleware for the function tools. Before a call it would check the arguments, and after the call the result: Prompt Shields with the tool result passed as a document (indirect attacks, for example in hotel reviews) and the harm categories. A blocked check would return `{"error": "..."}`, as the tools do for other errors, so the agent can react to it. The server-side tools (knowledge base, web search) cannot be checked locally. Covering them needs tools that Foundry moderates (for example Bing Grounding instead of `WebSearchTool`, the Azure AI Search tool instead of the MCP knowledge base) and tool call and tool response controls in the policy.
 
 ### Severity levels for content harms
 
@@ -832,8 +975,9 @@ To stop incurring costs, delete the resource group. Some resources stay soft-del
 | Speech (F0) | 48 hours | Still counts towards the limit of one free Speech resource per subscription |
 | Language (F0) | 48 hours | Still counts towards the limit of one free Language resource per subscription |
 | Key Vault | 7 days | Reuse the vault name (possible only while purge protection is off) |
+| Log Analytics workspace | 14 days | Nothing to do: a deployment to the same resource group and region recovers it with its data |
 
-Cosmos DB, AI Search and Storage are deleted immediately.
+Cosmos DB, AI Search, Storage and Application Insights are deleted immediately.
 
 Use the region the resources were deployed to as `<location>`:
 

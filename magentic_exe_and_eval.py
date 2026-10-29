@@ -18,6 +18,7 @@ from utils.agent_middleware import (
     log_manager_decisions,
     log_tool_calls,
 )
+from utils.observability import enable_tracing
 
 # WARNING shows tool-loop problems such as "Maximum consecutive function call errors reached"
 logging.getLogger("agent_framework").setLevel(logging.WARNING)
@@ -136,6 +137,8 @@ def create_workflow(manager_agent, participants):
 # workflow.run() is an async method, so you need to run it in an async context.
 async def run_evaluation(manager_agent, participants, test_cases, case_records):
     """Run and evaluate every test case; the records are appended to case_records."""
+    # Once per process: covers every agent and every workflow of this evaluation
+    await enable_tracing(manager_agent, config, "magentic_evaluation")
     repetitions = evaluation_config["repetitions"]
 
     for repetition in range(1, repetitions + 1):

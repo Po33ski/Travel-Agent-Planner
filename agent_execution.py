@@ -26,6 +26,7 @@ from utils.agent_middleware import (
     log_manager_decisions,
     log_tool_calls,
 )
+from utils.observability import enable_tracing
 from utils.utils import add_todays_date
 
 # WARNING shows tool-loop problems such as "Maximum consecutive function call errors reached"
@@ -273,6 +274,8 @@ def ask_user_email(stored_email: str | None) -> str | None:
 # Microsoft Agent Frame is built entirely on async programming.
 # workflow.run() is an async method, so you need to run it in an async context.
 async def run_workflow(manager_agent, participants, user_id: str, travel_history: TravelHistoryProvider):
+    # Once per process: covers every agent and every workflow of this chat
+    await enable_tracing(manager_agent, config, "chat")
     print("Interactive workflow mode started. Type 'exit' or 'quit' to stop.\n")
 
     while True:

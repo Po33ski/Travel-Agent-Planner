@@ -10,6 +10,7 @@ from classes.google_services import search_hotels_google_maps
 from classes.secret_manager_services import SecretManager
 from classes.evaluate_services import EvaluateService
 from utils.agent_middleware import BlockedReplyMonitor, log_tool_calls
+from utils.observability import enable_tracing
 
 # WARNING shows tool-loop problems such as "Maximum consecutive function call errors reached"
 logging.getLogger("agent_framework").setLevel(logging.WARNING)
@@ -74,6 +75,8 @@ def create_agent(usage_middleware):
 # agent.run() is an async method, so you need to run it in an async context.
 async def run_evaluation(agent, test_cases, case_records):
     """Run and evaluate every test case; the records are appended to case_records."""
+    # Once per process: covers the agent and its tool calls in every test case
+    await enable_tracing(agent, config, "single_agent_evaluation")
     repetitions = evaluation_config["repetitions"]
 
     for repetition in range(1, repetitions + 1):

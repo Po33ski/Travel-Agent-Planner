@@ -34,6 +34,20 @@ memory:
   max_travel_keywords: 20     # preferences.travel_keywords keeps the newest ones
   max_trip_summaries: 5       # trip_history keeps the newest ones; all of them go to the manager
 
+# Tracing (agent_execution.py and both evaluation scripts, utils/observability.py): OpenTelemetry traces of
+# the agents, tool calls and workflow steps go to Application Insights through the project connection
+# created in resource_deployment.bicep. The workspace has a daily cap (logAnalyticsDailyQuotaGb).
+observability:
+  enabled: true
+  # true also records prompts, answers and tool arguments and results, i.e. what the user typed;
+  # false keeps the structure, durations, token counts and errors
+  enable_sensitive_data: false
+  # Service name in Application Insights (cloud_RoleName): keeps the chat apart from the evaluation runs
+  service_names:
+    chat: "travel-planner-chat"
+    magentic_evaluation: "travel-planner-eval-magentic"
+    single_agent_evaluation: "travel-planner-eval-single-agent"
+
 nlp:
   sentiment_analysis:
     sentiment_escalation_threshold: 0.5

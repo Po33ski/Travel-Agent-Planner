@@ -25,6 +25,13 @@ param speechName string = '${projectPrefix}-speech'
 param cosmosDbAccountName string = '${projectPrefix}-cosmos'
 param databaseName string = '${projectPrefix}-cosmosdb'
 param containerName string = '${projectPrefix}-container'
+// Observability: Application Insights stores its data in the Log Analytics workspace
+param logAnalyticsName string = '${projectPrefix}-law'
+param appInsightsName string = '${projectPrefix}-appi'
+param appInsightsConnectionName string = '${appInsightsName}-connection'
+// Daily ingestion cap of the workspace in GB. A string, because Bicep has no decimal numbers.
+// 0.15 GB a day (about 4.5 GB a month) stays below the free 5 GB a month per billing account.
+param logAnalyticsDailyQuotaGb string = '0.15'
 // Third-party API keys: scripts/01_resource_deployment.sh passes them from .env
 // (VISUAL_CROSSING_API_KEY, GOOGLE_API_KEY).
 // Required: the deployment fails when a value is missing or empty.
@@ -390,6 +397,58 @@ resource keyVault 'Microsoft.KeyVault/vaults@2026-02-01' = {
     // Purge protection cannot be turned off again and blocks the vault name for the whole retention
     // period after the resource group is deleted. Uncomment in production ('false' is not accepted).
     // enablePurgeProtection: true
+  }
+}
+
+// ------------------------------------------------------------------ observability (tracing of the agents)
+// Billed per GB ingested (the first 5 GB a month per billing account are free); no fixed cost.
+// Analytics retention of 30 days is included in the ingestion price.
+resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2025-02-01' = {
+  name: logAnalyticsName
+  location: location
+  properties: {
+    sku: { name: 'PerGB2018' } // pay-as-you-go, the tier with the free 5 GB a month
+    retentionInDays: 30
+    workspaceCapping: {
+      // When the cap is reached, the workspace stops collecting data until the next day (UTC)
+      dailyQuotaGb: json(logAnalyticsDailyQuotaGb)
+    }
+  }
+}
+
+// Workspace-based Application Insights: no charge of its own, its data is billed in the workspace
+resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
+  name: appInsightsName
+  location: location
+  kind: 'web'
+  properties: {
+    Application_Type: 'web'
+    WorkspaceResourceId: logAnalytics.id
+    IngestionMode: 'LogAnalytics'
+  }
+}
+
+// Project connection to Application Insights. FoundryAgent.configure_azure_monitor() reads the connection
+// string from it, and the Foundry portal shows the traces of the project's agents (Tracing).
+// The SDK accepts only one Application Insights connection per project, with the connection string as its key.
+resource appInsightsConnection 'Microsoft.CognitiveServices/accounts/projects/connections@2025-10-01-preview' = {
+  parent: aiProject
+  name: appInsightsConnectionName
+  dependsOn: [
+    kbConnection // one connection write at a time on the project
+  ]
+  properties: {
+    category: 'AppInsights'
+    authType: 'ApiKey'
+    target: appInsights.id
+    isSharedToAll: true
+    credentials: {
+      key: appInsights.properties.ConnectionString
+    }
+    metadata: {
+      ApiType: 'Azure'
+      ResourceId: appInsights.id
+    }
   }
 }
 
