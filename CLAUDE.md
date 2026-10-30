@@ -22,15 +22,16 @@ tutorials\Scripts\activate
 pip install -r requirements.txt
 
 python utils/split_travel_guide.py                  # split inputs/world_city_travel_guide.md into inputs/travel_guide/ (git-ignored: on a fresh clone and after a change to the guide)
-python rag_setup.py                                  # upload the guide, build the knowledge source and knowledge base (needs SOURCE_FOLDER_PATH = inputs/travel_guide, one file per city)
+python rag/rag_setup.py                              # upload the guide, build the knowledge source and knowledge base (needs SOURCE_FOLDER_PATH = inputs/travel_guide, one file per city)
 python agents/<name>_agent_deployment.py             # create or update the RAI policy and a new agent version
 python agents/single_agent/travel_agent_deployment.py
-python agent_execution.py                            # interactive chat (Magentic team)
-python magentic_exe_and_eval.py                      # evaluate the team, report goes to outputs/
-python single_agent_exe_and_eval.py                  # evaluate travelAgent
+python execution/agent_execution.py                  # interactive chat (Magentic team)
+python evaluation/magentic_exe_and_eval.py           # evaluate the team, report goes to outputs/
+python evaluation/single_agent_exe_and_eval.py       # evaluate travelAgent
 ```
 
-- Run the agent scripts **by path**. `python -m agents.…` breaks because the `openai-agents` package is also imported as `agents`. The scripts in `agents/` add the project root to `sys.path` themselves.
+- The runnable scripts are grouped by purpose: `execution/` (chat), `evaluation/` (the two evaluation scripts), `rag/` (knowledge base setup), `agents/` (agent deployment). The project root holds only shared configuration (`config.yaml`, `requirements.txt`, `resource_deployment.bicep`).
+- Run the scripts **by path**. `python -m agents.…` breaks because the `openai-agents` package is also imported as `agents`. Every script outside the root adds the project root to `sys.path` itself, so `classes` and `utils` can be imported. The scripts in `execution/`, `evaluation/` and `rag/` also `os.chdir()` to the project root, because the relative paths they use (`config.yaml`, `inputs/`, `outputs/`, `SOURCE_FOLDER_PATH`) are relative to it; keep that block above the first `classes`/`utils` import in a new script there.
 - There is no test suite, linter or build. The "tests" are the evaluation scripts. They call real models and the Foundry judge, so each case costs money. To run a subset, cut down `inputs/evaluation_prompts.yaml` or set `evaluation.evaluate_agents: false` in `config.yaml`.
 - Every script needs `KEY_VAULT_URL` (set in the git-ignored `.vscode/launch.json`) and `az login`. All other settings and keys are Key Vault secrets, with one exception: `search_hotels_google_maps` still reads `GOOGLE_API_KEY` from the environment (the Key Vault version is commented out in `classes/google_services.py`). `launch.json` loads it from `.env` (`envFile`); outside the debugger, load `.env` into the environment yourself, or the hotel search returns "not configured" and every hotel case fails. A secret name is the setting name with `-` instead of `_` (for example `PROJECT-ENDPOINT`). `.env` holds the two third-party keys passed to the Bicep deployment; no Python code opens it.
 

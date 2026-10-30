@@ -5,6 +5,12 @@ import logging
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+# This script lives in rag/; add the project root so the classes package can be imported,
+# and work from the root, because SOURCE_FOLDER_PATH (inputs/travel_guide) is relative to it
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+os.chdir(PROJECT_ROOT)
+
 from azure.core.exceptions import HttpResponseError
 from azure.identity import DefaultAzureCredential
 from azure.keyvault.secrets import SecretClient

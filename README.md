@@ -49,12 +49,12 @@ The chat does not use `travelAgent`. It exists so that the [evaluation](#evaluat
 | Path | Purpose |
 |---|---|
 | `resource_deployment.bicep` | Azure infrastructure: Foundry resource and project, model deployments, AI Search, Storage, Speech, Language, Cosmos DB, Key Vault with all settings and keys, knowledge base connection and role assignments |
-| `rag_setup.py` | Uploads the travel guide and builds the Foundry IQ knowledge source and knowledge base |
+| `rag/rag_setup.py` | Uploads the travel guide and builds the Foundry IQ knowledge source and knowledge base |
 | `agents/<agent>_deployment.py` | One script per agent. Creates or updates the RAI policy and the server-side agent (system prompt and tools) |
 | `agents/<agent>_config.yaml` | One file per agent: agent name and system prompt |
-| `agent_execution.py` | Interactive command-line chat. Asks for the user name and e-mail address, builds the Magentic workflow, asks the user to approve the manager's plan, runs the weather, hotel search and hotel review tools locally, saves the conversation and preferences to Cosmos DB, converts the final answer to speech and offers to save a trip summary and keywords |
-| `magentic_exe_and_eval.py` | Runs the test prompts through the Magentic workflow, evaluates every run and saves the report in `outputs/` |
-| `single_agent_exe_and_eval.py` | The same evaluation for the single agent `travelAgent` |
+| `execution/agent_execution.py` | Interactive command-line chat. Asks for the user name and e-mail address, builds the Magentic workflow, asks the user to approve the manager's plan, runs the weather, hotel search and hotel review tools locally, saves the conversation and preferences to Cosmos DB, converts the final answer to speech and offers to save a trip summary and keywords |
+| `evaluation/magentic_exe_and_eval.py` | Runs the test prompts through the Magentic workflow, evaluates every run and saves the report in `outputs/` |
+| `evaluation/single_agent_exe_and_eval.py` | The same evaluation for the single agent `travelAgent` |
 | `agents/single_agent/` | Deployment script and config file (agent name and system prompt) of the single agent `travelAgent` |
 | `config.yaml` | Guardrail (RAI) settings shared by all agents, profile TTL for Cosmos DB, the travel history limits, the tracing settings, the NLP sentiment threshold and the evaluation settings |
 | `classes/evaluate_services.py` | `EvaluateService`: Foundry evaluators for the final answer and for every agent, rule checks, token counting and the report, for a workflow or a single agent. `TokenUsageMiddleware`: records the token usage of every agent call |
@@ -173,7 +173,7 @@ None of them is secret. In VS Code, set them in the `env` section of each config
   "name": "Python Debugger: Agent Execution",
   "type": "debugpy",
   "request": "launch",
-  "program": "${workspaceFolder}/agent_execution.py",
+  "program": "${workspaceFolder}/execution/agent_execution.py",
   "env": {
     "KEY_VAULT_URL": "https://<prefix>-kv.vault.azure.net/",
     "USER_ROLE": "Traveler"
@@ -187,7 +187,7 @@ The template gives your account the `Key Vault Secrets User` role. Role assignme
 
 ```powershell
 python utils/split_travel_guide.py   # on a fresh clone and after a change to inputs/world_city_travel_guide.md
-python rag_setup.py
+python rag/rag_setup.py
 ```
 
 `split_travel_guide.py` writes one file per city to `inputs/travel_guide/` and replaces what was there, so cities removed from the guide disappear. It writes nothing if the files do not add up to the guide. The files are UTF-8 with a BOM: without it the indexer guesses the encoding, and it read two of the short files (Kraków, Florianópolis) as GBK. `inputs/` is git-ignored, so the city files are not in the repository: a fresh clone has to run the split first. The files already tracked there (the full guide, the PDF and `evaluation_prompts.yaml`) stay tracked.
@@ -214,12 +214,12 @@ Optional: deploy the single agent `travelAgent`, which only the [evaluation](#ev
 python agents/single_agent/travel_agent_deployment.py
 ```
 
-> Run the scripts by path, as shown. `python -m agents.<script>` does not work when the `openai-agents` package is installed, because that package is also imported as `agents`.
+> Run the scripts by path, as shown. `python -m agents.<script>` does not work when the `openai-agents` package is installed, because that package is also imported as `agents`. The scripts in `agents/`, `execution/`, `evaluation/` and `rag/` add the project root to the import path themselves; the last three also switch to the project root, so `config.yaml`, `inputs/` and `outputs/` are found from any working directory.
 
 ### 8. Chat with the agents
 
 ```powershell
-python agent_execution.py
+python execution/agent_execution.py
 ```
 
 The chat first asks for your **user name** and then for your **e-mail address**, and does not start the agents until you give both. A known name loads your existing profile, and a new name creates one. A returning user can press Enter to keep the stored e-mail address (see [User memory, language detection and travel history](#user-memory-language-detection-and-travel-history)).
@@ -252,8 +252,8 @@ The chat stops twice to ask you (see [Human in the loop](#human-in-the-loop)):
 ### 9. Evaluate the agents
 
 ```powershell
-python magentic_exe_and_eval.py        # the Magentic team
-python single_agent_exe_and_eval.py    # the single agent (deploy travelAgent first, see step 7)
+python evaluation/magentic_exe_and_eval.py        # the Magentic team
+python evaluation/single_agent_exe_and_eval.py    # the single agent (deploy travelAgent first, see step 7)
 ```
 
 Both scripts need only `KEY_VAULT_URL`. They run the test prompts from `inputs/evaluation_prompts.yaml`, score every answer and save a report in `outputs/`. See [Evaluation](#evaluation) for the metrics and the report.
@@ -447,7 +447,7 @@ workflow.run                                   the Magentic workflow, one per wo
    └─ invoke_agent weatherAgent
       ├─ chat <model>                           the model asks for get_forecast_weather
       ├─ execute_tool get_forecast_weather      the local function tool
-      │  └─ GET weather.visualcrossing.com      the HTTP call below it
+      │  └─ GET weather.visualcrossing.com      the HTTP call below it, with key=REDACTED
       └─ chat <model>                           the model writes the reply from the tool result
 ```
 
@@ -460,7 +460,7 @@ Between these spans the workflow also writes `message.send` and `edge_group.proc
 | `invoke_agent <agent>` | one run of a `FoundryAgent` | `gen_ai.agent.name`, `gen_ai.agent.id`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens` (all model calls of this run together) |
 | `chat <model>` | one model call of that agent | `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.usage.*` (input, output, cached input, reasoning), `gen_ai.response.finish_reasons` |
 | `execute_tool <tool>` | one local function tool call | `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.tool.type` (`function`) |
-| HTTP and Azure SDK spans | the Azure Monitor distro instruments `requests`, `urllib3` and the Azure SDKs | the method and URL of the call, the status code; Cosmos DB, Key Vault and Language calls appear the same way |
+| HTTP and Azure SDK spans | the Azure Monitor distro instruments `requests`, `urllib3` and the Azure SDKs; the Visual Crossing call writes its own span instead (see below) | the method and URL of the call, the status code; Cosmos DB, Key Vault and Language calls appear the same way |
 
 Every span carries the script's service name (`cloud_RoleName`, see above) and the trace id that ties the tree together.
 
@@ -528,7 +528,7 @@ AppDependencies
 - **A tool error is not a failed span.** The tools return `{"error": ...}` instead of raising an exception, so `execute_tool` stays `Success = true`. The error is visible only in `gen_ai.tool.call.result`, i.e. with sensitive data on, or in the agent's reply.
 - **No spans for the server-side tools.** `knowledge_base_retrieve` and `web_search` run in Foundry, so the client has no `execute_tool` span for them: their time is part of the `chat` span of the agent that used them.
 - **Before `enable_tracing()` nothing is traced.** The Key Vault reads at the start of every script happen before the call and do not appear.
-- **⚠️ The Visual Crossing API key in the traces.** The weather tool sends its key as a query parameter (`?key=...`), and the HTTP spans record the full URL. Unless the `requests` and `urllib3` instrumentations are switched off or the key moves out of the URL, the key is stored in plain text in the workspace (`AppDependencies`, column `Data`). The Google key is sent in a header and is not recorded. Not checked on a real run yet.
+- **API keys stay out of the traces.** The HTTP spans of `requests` and `urllib3` record the full URL, and they hide only a fixed list of parameters (AWS and Google signatures). Visual Crossing documents its key only as a query parameter (`?key=...`), so without care the key would be stored in plain text in `AppDependencies` (column `Data`). The weather tool therefore calls the API inside `http_span_without_secrets()` (`utils/observability.py`): within this block the two instrumentations are switched off, and the function writes its own HTTP span with `key=REDACTED` in the URL, the status code and, on failure, `error.type` (only the type of the exception: a connection error message quotes the URL with the key). The key is still sent to Visual Crossing as before; only the trace is cleaned. The Google key is sent in the `X-Goog-Api-Key` header, which the instrumentation does not record, so the hotel search keeps the normal HTTP span. Checked offline with the real `requests` and `urllib3` instrumentations against a local server: before the change the span held `?key=<key>`, after it no span or exception event holds the key, for a 200, a 400 and a connection error.
 
 ### Human in the loop
 
@@ -600,7 +600,7 @@ The tool calls the [Visual Crossing Timeline API](https://www.visualcrossing.com
 
 **`get_forecast_weather(location, start_date=None, end_date=None)`** returns daily data only (no hourly data, to keep the tool output small): date, max/min/feels-like temperature, precipitation, precipitation probability and type, wind speed, conditions, description, sunrise and sunset. Without dates it returns the next 15 days. Dates use `YYYY-MM-DD` format.
 
-Sunrise and sunset times are shortened to `HH:MM` (`utils/utils.py`). Errors never raise exceptions. They come back as `{"error": "..."}`, for example for an unknown city, an invalid date, a timeout or a key that can't be read from Key Vault, so the agent can react to them in its answer.
+Sunrise and sunset times are shortened to `HH:MM` (`utils/utils.py`). The API key is a query parameter, the only way Visual Crossing documents; the call runs inside `http_span_without_secrets()`, so the traces show `key=REDACTED` (see [Tracing](#tracing)). Errors never raise exceptions. They come back as `{"error": "..."}`, for example for an unknown city, an invalid date, a timeout or a key that can't be read from Key Vault, so the agent can react to them in its answer.
 
 The module also contains `get_current_weather(location)`. It is not attached to any agent in this version.
 

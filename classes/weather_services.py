@@ -8,6 +8,7 @@ from azure.keyvault.secrets import SecretClient
 import requests
 
 from classes.secret_manager_services import SecretManager
+from utils.observability import http_span_without_secrets
 from utils.utils import normalize_sunrise_sunset
 
 # Same Key Vault mechanism as in agent_execution.py
@@ -67,13 +68,14 @@ class WeatherService:
         if not self.api_key:
             return {"error": "Weather service API key is not configured."}
 
+        url = f"{API_HTTP}{path}"
+        query = {"unitGroup": "metric", "key": self.api_key, "contentType": "json", **params}
         try:
-            response = requests.get(
-                f"{API_HTTP}{path}",
-                params={"unitGroup": "metric", "key": self.api_key, "contentType": "json", **params},
-                timeout=10,
-            )
-            response.raise_for_status()
+            # Visual Crossing documents the key only as a query parameter; the trace gets key=REDACTED
+            with http_span_without_secrets("GET", url, query, secret_params={"key"}) as span:
+                response = requests.get(url, params=query, timeout=10)
+                span.set_attribute("http.response.status_code", response.status_code)
+                response.raise_for_status()
             weather_data = response.json()
             return normalize_sunrise_sunset(weather_data)
         except requests.exceptions.HTTPError as e:

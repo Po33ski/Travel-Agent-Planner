@@ -1,7 +1,16 @@
 import os
 import re
+import sys
 import asyncio
 import logging
+from pathlib import Path
+
+# This script lives in execution/; add the project root so the classes and utils packages can be imported,
+# and work from the root, because the relative paths (config.yaml, outputs/) are relative to it
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+os.chdir(PROJECT_ROOT)
+
 from azure.identity import DefaultAzureCredential
 from azure.core.credentials import AzureKeyCredential
 from agent_framework.foundry import FoundryAgent
