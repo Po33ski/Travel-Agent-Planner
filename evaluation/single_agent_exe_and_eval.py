@@ -18,6 +18,7 @@ from classes.weather_services import get_forecast_weather
 from classes.google_services import search_hotels_google_maps
 from classes.secret_manager_services import SecretManager
 from classes.evaluate_services import EvaluateService
+from classes.scope_guard_services import ScopeGuard
 from utils.agent_middleware import BlockedReplyMonitor, log_tool_calls
 from utils.observability import enable_tracing
 
@@ -55,10 +56,20 @@ judge_client = FoundryChatClient(
     model=judge_model_deployment_name,
     credential=credential,
 )
+# The same scope guard as for the team, so both set-ups are compared with the same first step
+scope_guard = ScopeGuard(
+    FoundryChatClient(
+        project_endpoint=endpoint,
+        model=secret_manager.get_secret(config["scope_guard"]["model_secret"]),
+        credential=credential,
+    ),
+    config,
+)
 evaluate_service = EvaluateService(
     judge_client,
     config,
     max_answer_words=evaluation_config["max_answer_words"]["single_agent"],
+    scope_guard=scope_guard,
 )
 
 

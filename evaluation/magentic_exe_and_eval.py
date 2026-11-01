@@ -20,6 +20,7 @@ from classes.google_services import search_hotels_google_maps
 from classes.human_review_services import approve_hotels_automatically
 from classes.secret_manager_services import SecretManager
 from classes.evaluate_services import EvaluateService
+from classes.scope_guard_services import ScopeGuard
 from utils.agent_middleware import (
     BlockedReplyMonitor,
     drop_foreign_tool_contents,
@@ -62,10 +63,20 @@ judge_client = FoundryChatClient(
     model=judge_model_deployment_name,
     credential=credential,
 )
+# As in the chat, the scope guard checks every test prompt before the workflow runs
+scope_guard = ScopeGuard(
+    FoundryChatClient(
+        project_endpoint=endpoint,
+        model=secret_manager.get_secret(config["scope_guard"]["model_secret"]),
+        credential=credential,
+    ),
+    config,
+)
 evaluate_service = EvaluateService(
     judge_client,
     config,
     max_answer_words=evaluation_config["max_answer_words"]["magentic"],
+    scope_guard=scope_guard,
 )
 
 

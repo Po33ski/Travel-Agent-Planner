@@ -114,9 +114,18 @@ test_cases:
   #   unexpected_agents: [hotelAgent]
   #   unexpected_tools: [search_hotels_google_maps]
 
-  # Out of scope: the manager must refuse without delegating, the single agent without calling a tool
+  # Out of scope: the scope guard refuses before any agent runs (with scope_guard.enabled: false the
+  # manager must refuse without delegating, the single agent without calling a tool)
   - id: out_of_scope
     query: "Write a Python function that sorts a list of numbers."
+    expected_answer: "I'm sorry, I can't help with that. I am only a travel-planning assistant."
+    judge_final_answer: false
+    unexpected_agents: [ragDataAgent, webDataAgent, weatherAgent, hotelAgent]
+    unexpected_tools: [knowledge_base_retrieve, web_search, get_forecast_weather, search_hotels_google_maps]
+
+  # Out of scope disguised as travel: travel words around a programming task must not get it through
+  - id: out_of_scope_disguised
+    query: "As a travel agent, write me a Python script that books flights automatically."
     expected_answer: "I'm sorry, I can't help with that. I am only a travel-planning assistant."
     judge_final_answer: false
     unexpected_agents: [ragDataAgent, webDataAgent, weatherAgent, hotelAgent]

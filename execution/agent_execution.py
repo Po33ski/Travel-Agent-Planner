@@ -13,7 +13,7 @@ os.chdir(PROJECT_ROOT)
 
 from azure.identity import DefaultAzureCredential
 from azure.core.credentials import AzureKeyCredential
-from agent_framework.foundry import FoundryAgent
+from agent_framework.foundry import FoundryAgent, FoundryChatClient
 from agent_framework.orchestrations import MagenticBuilder
 from agent_framework.exceptions import ChatClientContentFilterException
 from azure.keyvault.secrets import SecretClient
@@ -28,6 +28,7 @@ from classes.secret_manager_services import SecretManager
 from classes.cosmos_memory_services import CosmosMemory
 from classes.azure_nlp_services import AzureNLPService
 from classes.travel_history_provider import TravelHistoryProvider
+from classes.scope_guard_services import ScopeGuard
 from utils.agent_middleware import (
     BlockedReplyMonitor,
     drop_foreign_tool_contents,
@@ -111,6 +112,16 @@ cosmos_memory = CosmosMemory(
 
 # Detects answers that the model refused or the content filter cut off
 blocked_reply_monitor = BlockedReplyMonitor()
+
+# A small model checks every message before the team runs; the team never sees an out-of-scope message
+scope_guard = ScopeGuard(
+    FoundryChatClient(
+        project_endpoint=endpoint,
+        model=secret_manager.get_secret(config["scope_guard"]["model_secret"]),
+        credential=credential,
+    ),
+    config,
+)
 
 
 def create_agents(travel_history: TravelHistoryProvider):
@@ -301,19 +312,27 @@ async def run_workflow(manager_agent, participants, user_id: str, travel_history
             break
 
         try:
-            print("\n[WORKFLOW AGENT] Executing pipeline...")
-
-            # A Magentic workflow handles exactly one task and then refuses further messages,
-            # so a new one is built for every user message
-            workflow = create_workflow(manager_agent, participants)
-
             blocked_reply_monitor.reset()
-            # The agents do not know the current date, so it is put in front of the message.
-            # The conversation history below keeps the message as the user wrote it.
-            final_text = await run_with_plan_review(workflow, add_todays_date(user_message_text))
-            if not final_text:
-                print("⚠️ The workflow ended without a final answer. Please try again.")
-                continue
+
+            # The scope guard decides first: a message that is not a travel request gets the fixed
+            # refusal without any agent call (no plan, no plan review)
+            scope = await scope_guard.check(user_message_text)
+            scope.print_line()
+            if scope.in_scope:
+                print("\n[WORKFLOW AGENT] Executing pipeline...")
+
+                # A Magentic workflow handles exactly one task and then refuses further messages,
+                # so a new one is built for every user message
+                workflow = create_workflow(manager_agent, participants)
+
+                # The agents do not know the current date, so it is put in front of the message.
+                # The conversation history below keeps the message as the user wrote it.
+                final_text = await run_with_plan_review(workflow, add_todays_date(user_message_text))
+                if not final_text:
+                    print("⚠️ The workflow ended without a final answer. Please try again.")
+                    continue
+            else:
+                final_text = scope_guard.refusal
 
             print("\n" + "=" * 50)
             print("ASSISTANT REPLY:")
@@ -336,10 +355,12 @@ async def run_workflow(manager_agent, participants, user_id: str, travel_history
             print(f"\n[SPEECH] {str(speech_result)}")
             print("=" * 50)
 
-            propose_trip_memory(user_id, user_message_text, final_text, travel_history)
+            # A refusal is kept as a fine-tuning example and read out, but there is no trip to remember
+            if scope.in_scope:
+                propose_trip_memory(user_id, user_message_text, final_text, travel_history)
 
         except ChatClientContentFilterException as e:
-            # The RAI policy blocked the input of the manager or of one of the specialists
+            # The content filter blocked the input of the scope guard, the manager or one of the specialists
             checks = getattr(e, "content_filter_result", None) or {}
             triggered = [name for name, check in checks.items() if check.filtered]
             reason = f" ({', '.join(triggered)})" if triggered else ""

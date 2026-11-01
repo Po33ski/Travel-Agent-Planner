@@ -19,6 +19,7 @@ from agent_framework import (
 )
 from agent_framework.foundry import FoundryEvals
 
+from classes.scope_guard_services import SCOPE_GUARD_NAME
 from utils.utils import add_todays_date
 
 # Token counts reported in usage_details of an agent response. The input count includes
@@ -92,16 +93,19 @@ class EvaluateService:
     different workflows can be compared.
     """
 
-    def __init__(self, judge_client, config, max_answer_words):
+    def __init__(self, judge_client, config, max_answer_words, scope_guard=None):
         """
         Args:
             judge_client: FoundryChatClient whose model deployment is used as the LLM judge.
             config: content of config.yaml; the "evaluation" section is used.
             max_answer_words: word limit of the final answer, as set in the system prompt
                 of the evaluated agent or workflow manager.
+            scope_guard: ScopeGuard that checks every test prompt before the run, as in the chat.
+                None runs every prompt without a check.
         """
         settings = config["evaluation"]
         self.judge_client = judge_client
+        self.scope_guard = scope_guard
         self.max_answer_words = max_answer_words
         self.test_cases_path = settings["test_cases_path"]
         self.output_dir = settings["output_dir"]
@@ -350,16 +354,20 @@ class EvaluateService:
         # The agents get today's date in front of the query, as in the chat
         task = add_todays_date(test_case["query"])
 
+        scope = None
         try:
+            scope = await self._check_scope(record, test_case)
+            if scope is not None and not scope.in_scope:
+                return self._refused_record(record, test_case, scope, called_agents=[])
             run = await self.run_workflow(workflow, task)
         except Exception as error:
             record["error"] = f"{type(error).__name__}: {error}"
             # Tokens used before the failure still count
-            record["token_usage"] = self.count_workflow_tokens()
+            record["token_usage"] = self._add_scope_usage(self.count_workflow_tokens(), scope)
             return record
 
         workflow_result = run.pop("workflow_result")
-        record.update(run)
+        record.update(self._add_scope_run(run, scope))
 
         called_agents = list(record["token_usage"]["per_agent"])
         record["rule_checks"] = self.check_final_answer(record["final_answer"], test_case, called_agents)
@@ -392,16 +400,20 @@ class EvaluateService:
         # The agent and the judge get today's date in front of the query, as in a workflow run
         task = add_todays_date(test_case["query"])
 
+        scope = None
         try:
+            scope = await self._check_scope(record, test_case)
+            if scope is not None and not scope.in_scope:
+                return self._refused_record(record, test_case, scope, called_tools={})
             run = await self.run_agent(agent, task)
         except Exception as error:
             record["error"] = f"{type(error).__name__}: {error}"
             # Tokens used before the failure still count
-            record["token_usage"] = self.count_workflow_tokens()
+            record["token_usage"] = self._add_scope_usage(self.count_workflow_tokens(), scope)
             return record
 
         response = run.pop("response")
-        record.update(run)
+        record.update(self._add_scope_run(run, scope))
 
         record["rule_checks"] = self.check_final_answer(
             record["final_answer"], test_case, called_tools=record["called_tools"]
@@ -420,6 +432,60 @@ class EvaluateService:
                 self.evaluate_agent_work(agent, task, response, eval_name)
             )
 
+        return record
+
+    # ------------------------------------------------------------------ scope guard
+    async def _check_scope(self, record, test_case):
+        """Run the scope guard on the test prompt, as the chat does; None without a guard.
+
+        The check is stored in record["scope_guard"]. A prompt is checked as the user wrote it,
+        without the date line.
+        """
+        # Tokens of the previous test case must not count when this one fails before its run
+        self.usage_middleware.reset()
+        if self.scope_guard is None:
+            return None
+        scope = await self.scope_guard.check(test_case["query"])
+        scope.print_line()
+        record["scope_guard"] = scope.as_dict()
+        return scope
+
+    def _add_scope_usage(self, token_usage, scope):
+        """Add the scope guard's tokens to the token usage of a run, as one more entry next to the agents."""
+        if scope is None or scope.skipped:
+            return token_usage
+        guard = self._usage_to_dict(scope.usage, 1)
+        return {
+            "total": self._sum_counts([token_usage["total"], guard]),
+            "per_agent": {SCOPE_GUARD_NAME: guard, **token_usage["per_agent"]},
+        }
+
+    def _add_scope_run(self, run, scope):
+        """Add the scope guard's tokens and duration to a finished run: in the chat the user waits for both."""
+        if scope is None or scope.skipped:
+            return run
+        run["token_usage"] = self._add_scope_usage(run["token_usage"], scope)
+        run["duration_seconds"] = round(run["duration_seconds"] + scope.duration_seconds, 1)
+        return run
+
+    def _refused_record(self, record, test_case, scope, called_agents=None, called_tools=None):
+        """Complete the record of a test prompt that the scope guard refused: no agent ran.
+
+        The rule checks run on the refusal as on any final answer, so a travel prompt refused by
+        mistake fails its expected_agents / expected_tools check. The LLM judge is skipped: there is
+        no workflow or agent response to give it.
+        """
+        record["final_answer"] = self.scope_guard.refusal
+        record["duration_seconds"] = scope.duration_seconds
+        record["token_usage"] = self._add_scope_usage(self.count_workflow_tokens(), scope)
+        if called_tools is not None:
+            record["called_tools"] = called_tools
+        record["rule_checks"] = self.check_final_answer(
+            record["final_answer"], test_case, called_agents=called_agents, called_tools=called_tools
+        )
+        record["final_answer_evaluation"] = self._skipped_evaluation()
+        if self.agent_evaluation_enabled:
+            record["agent_evaluation"] = self._skipped_evaluation()
         return record
 
     # ------------------------------------------------------------------ report
@@ -457,6 +523,10 @@ class EvaluateService:
         return {
             "runs": len(case_records),
             "failed_runs": len(case_records) - len(completed),
+            # Test prompts the scope guard refused before any agent ran
+            "scope_guard_refusals": sum(
+                1 for record in case_records if record.get("scope_guard", {}).get("in_scope") is False
+            ),
             "average_duration_seconds": round(sum(durations) / len(durations), 1) if durations else None,
             "final_answer": self._aggregate_scores(final_answer_scores),
             "rule_checks": self._aggregate_scores(
@@ -509,6 +579,11 @@ class EvaluateService:
             f"(input {tokens['input_token_count']}, output {tokens['output_token_count']}) "
             f"in {tokens['calls']} agent calls"
         )
+        scope = record.get("scope_guard")
+        if scope and not scope["skipped"]:
+            outcome = "travel request" if scope["in_scope"] else "refused, no agent ran"
+            failed = f", check failed: {scope['error']}" if scope["error"] else ""
+            print(f"[EVAL] Scope guard: {outcome} ({scope['duration_seconds']} s{failed})")
         if "called_tools" in record:
             print(f"[EVAL] Tools called: {record['called_tools'] or 'none'}")
         for check in record["rule_checks"]:
@@ -524,6 +599,7 @@ class EvaluateService:
         print("EVALUATION SUMMARY")
         print("=" * 50)
         print(f"Runs: {summary['runs']} (failed: {summary['failed_runs']})")
+        print(f"Refused by the scope guard: {summary['scope_guard_refusals']}")
         print(f"Average duration: {summary['average_duration_seconds']} s")
 
         self._print_metrics("Final answer (LLM judge)", summary["final_answer"])
