@@ -86,7 +86,7 @@ blocked_reply_monitor = BlockedReplyMonitor()
 
 def create_agents(usage_middleware):
     # 1. Wrap the pre-deployed Foundry project agents.
-    # agent_name must match agent_name in agents/*_config.yaml and the Team section of the manager prompt.
+    # agent_name must match agent_name in agents/magentic/*_config.yaml and the Team section of the manager prompt.
     # usage_middleware records the token usage of every agent, the manager included.
     # drop_foreign_tool_contents: the agents get each other's text answers, not the raw tool calls.
     manager_agent = FoundryAgent(

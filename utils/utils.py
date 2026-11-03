@@ -1,6 +1,13 @@
-"""Shared utilities: the dated task message and helpers for the weather tools."""
+"""Shared utilities: the dated task message, the console login of the chats and helpers for the weather tools."""
 
+import re
 from datetime import date
+
+# First words of the date line; the system prompts describe the line
+TODAYS_DATE_PREFIX = "Today's date:"
+
+# Demo check only: something@domain.tld
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def add_todays_date(message: str) -> str:
@@ -8,10 +15,38 @@ def add_todays_date(message: str) -> str:
 
     The agents do not know the current date. They need it to turn "next week" into dates
     and to tell whether a trip is within the 15 days that the weather forecast covers.
-    The system prompts of the manager and of the single agent describe this first line.
+    The system prompts of the manager, the single agent, the concierge and its subagents
+    describe this first line.
     """
     today = date.today()
-    return f"Today's date: {today.isoformat()} ({today:%A})\n\n{message}"
+    return f"{TODAYS_DATE_PREFIX} {today.isoformat()} ({today:%A})\n\n{message}"
+
+
+def ask_user_name() -> str | None:
+    """Ask for the user name until a non-empty one is given; None when the user quits."""
+    while True:
+        try:
+            user_name = input("User name: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return None
+        if user_name:
+            return user_name
+        print("The user name is required.")
+
+
+def ask_user_email(stored_email: str | None) -> str | None:
+    """Ask for the e-mail address until a valid one is given; Enter keeps the stored one. None when the user quits."""
+    prompt = f"E-mail [{stored_email}]: " if stored_email else "E-mail: "
+    while True:
+        try:
+            email = input(prompt).strip()
+        except (EOFError, KeyboardInterrupt):
+            return None
+        if not email and stored_email:
+            return stored_email
+        if EMAIL_PATTERN.match(email):
+            return email
+        print("A valid e-mail address is required.")
 
 
 def _time_to_hhmm(value: str | None) -> str | None:

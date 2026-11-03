@@ -20,6 +20,7 @@ from agent_framework import (
 from agent_framework.foundry import FoundryEvals
 
 from classes.scope_guard_services import SCOPE_GUARD_NAME
+from utils.agent_middleware import on_final_response
 from utils.utils import add_todays_date
 
 # Token counts reported in usage_details of an agent response. The input count includes
@@ -63,7 +64,8 @@ class TokenUsageMiddleware(AgentMiddleware):
     Agent middleware that records the token usage of every agent call.
     Add one shared instance to the middleware list of every evaluated agent: the single agent,
     or every agent of a workflow, the manager included. Usage is read from usage_details of
-    the agent response, which is only filled for non-streaming runs.
+    the agent response. In a streaming run (a concierge subagent: as_tool() always streams)
+    the response exists only after the stream has been read, so it is read through a result hook.
     """
 
     def __init__(self):
@@ -79,14 +81,47 @@ class TokenUsageMiddleware(AgentMiddleware):
         await call_next()
 
         agent_name = context.agent.name or "unknown"
-        usage = getattr(context.result, "usage_details", None)
         self.calls_by_agent[agent_name] = self.calls_by_agent.get(agent_name, 0) + 1
+        # The agent counts as called even when its stream never finishes
+        self.usage_by_agent.setdefault(agent_name, {})
+        on_final_response(context, lambda response: self._add_usage(agent_name, response))
+
+    def _add_usage(self, agent_name, response):
+        usage = getattr(response, "usage_details", None)
         self.usage_by_agent[agent_name] = add_usage_details(self.usage_by_agent.get(agent_name), usage)
+
+
+class ConciergeCallRecorder(AgentMiddleware):
+    """
+    Agent middleware for the concierge's subagents in the evaluation: records every subagent call
+    (the agent, the task it received and its final response), so each call can be scored like a
+    specialist turn of the Magentic workflow.
+
+    A subagent runs inside a tool call of the concierge (agent as a tool), so it leaves no workflow
+    events to read afterwards. as_tool() streams it, so the response is read through a result hook.
+    Put it after add_todays_date_to_task, so the recorded task is the one the subagent saw.
+    """
+
+    def __init__(self):
+        # (agent, task messages, final response) in the order the calls finished
+        self.calls = []
+
+    def reset(self):
+        """Forget the recorded calls, e.g. before the next test case."""
+        self.calls.clear()
+
+    async def process(self, context, call_next):
+        task_messages = list(context.messages)
+        await call_next()
+
+        agent = context.agent
+        on_final_response(context, lambda response: self.calls.append((agent, task_messages, response)))
 
 
 class EvaluateService:
     """
-    Evaluation of a single agent or a multi-agent workflow: answer quality, rule checks and token usage.
+    Evaluation of a single agent, a multi-agent workflow or the concierge with its subagents (the
+    *_concierge_* methods): answer quality, rule checks and token usage.
     Quality is scored by the Microsoft Foundry built-in evaluators (an LLM judge running in the
     Foundry project), rule checks run locally without model calls and token usage is collected
     by usage_middleware. Both kinds of runs produce the same report, so a single agent and
@@ -108,6 +143,7 @@ class EvaluateService:
         self.scope_guard = scope_guard
         self.max_answer_words = max_answer_words
         self.test_cases_path = settings["test_cases_path"]
+        self.concierge_test_cases_path = settings.get("concierge_test_cases_path")
         self.output_dir = settings["output_dir"]
         self.final_answer_evaluators = settings["final_answer_evaluators"]
         self.agent_evaluators = settings["agent_evaluators"]
@@ -433,6 +469,159 @@ class EvaluateService:
             )
 
         return record
+
+    # ------------------------------------------------------------------ concierge (concierge_agent_and_eval.py)
+    def load_concierge_test_cases(self):
+        """Read the concierge's test conversations (see inputs/concierge_evaluation_prompts.yaml for the format)."""
+        if not self.concierge_test_cases_path:
+            raise ValueError("evaluation.concierge_test_cases_path is not set in config.yaml")
+        with open(self.concierge_test_cases_path, "r", encoding="utf-8") as file:
+            return yaml.safe_load(file)["test_cases"]
+
+    async def evaluate_concierge_test_case(self, concierge_agent, call_recorder, test_case, workflow_name):
+        """Run one test conversation with the concierge and evaluate it.
+
+        A test case is the first user message (query) plus optional follow_ups, sent one after another
+        in one session, as in the chat. Every message is checked by the scope guard first, with the
+        concierge's previous reply as context; a refused message ends the conversation, because the
+        concierge never sees it.
+
+        The record has the format of evaluate_test_case, plus "turns" (every message with its reply and
+        scope check) and "subagent_calls". The final answer is the last reply. The rule checks cover it
+        and the subagents called in the whole conversation, the LLM judge sees the whole conversation,
+        and every subagent call is scored with the subagent's evaluators from agent_evaluators.
+        call_recorder is the ConciergeCallRecorder on the subagents. Errors are recorded instead of raised.
+        """
+        record = {"id": test_case["id"], "query": test_case["query"]}
+        follow_ups = test_case.get("follow_ups") or []
+        if follow_ups:
+            record["follow_ups"] = follow_ups
+        self.usage_middleware.reset()
+        call_recorder.reset()
+
+        # A new session per test case: the concierge remembers the earlier turns of this conversation only
+        session = concierge_agent.create_session()
+        turns = []
+        scopes = []
+        # The user's messages (with the date line, as the concierge got them) and its replies, for the judge
+        conversation = []
+        refused = False
+        started = time.perf_counter()
+        try:
+            for user_message in [test_case["query"], *follow_ups]:
+                if turns:
+                    # The earlier replies of a multi-turn case are not printed anywhere else
+                    self._print_concierge_turn(turns[-1], user_message)
+                previous_reply = turns[-1]["reply"] if turns else None
+                turn = {"user": user_message}
+                turns.append(turn)
+
+                if self.scope_guard is not None:
+                    scope = await self.scope_guard.check(user_message, previous_reply=previous_reply)
+                    scope.print_line()
+                    scopes.append(scope)
+                    turn["scope_guard"] = scope.as_dict()
+                    if not scope.in_scope:
+                        turn["reply"] = self.scope_guard.refusal
+                        refused = True
+                        break
+
+                # The concierge gets today's date in front of every message, as in the chat
+                task = add_todays_date(user_message)
+                response = await concierge_agent.run(task, session=session)
+                turn["reply"] = response.text
+                conversation += [Message("user", [task]), Message("assistant", [response.text])]
+        except Exception as error:
+            record["turns"] = turns
+            record["error"] = f"{type(error).__name__}: {error}"
+            # Tokens used before the failure still count
+            record["token_usage"] = self._add_concierge_scope_usage(self.count_workflow_tokens(), scopes)
+            return record
+
+        record["turns"] = turns
+        record["final_answer"] = turns[-1]["reply"]
+        # The scope checks are inside the measured time: in the chat the user waits for them too
+        record["duration_seconds"] = round(time.perf_counter() - started, 1)
+        record["token_usage"] = self._add_concierge_scope_usage(self.count_workflow_tokens(), scopes)
+        record["subagent_calls"] = self._concierge_subagent_calls(call_recorder)
+        if scopes:
+            # The check that decided: the refusal, or the check of the first message
+            record["scope_guard"] = (scopes[-1] if refused else scopes[0]).as_dict()
+
+        called_agents = list(record["token_usage"]["per_agent"])
+        record["rule_checks"] = self.check_final_answer(record["final_answer"], test_case, called_agents)
+
+        # The evaluation name is shown in the Foundry portal
+        eval_name = f"{workflow_name} - {test_case['id']}"
+        # A refusal is not judged: the judge does not know the assistant's scope (see _refused_record)
+        if not refused and test_case.get("judge_final_answer", True):
+            record["final_answer_evaluation"] = await self._run_evaluation(
+                self.evaluate_concierge_final_answer(conversation, f"{eval_name} - final answer")
+            )
+        else:
+            record["final_answer_evaluation"] = self._skipped_evaluation()
+        if self.agent_evaluation_enabled:
+            # Without a subagent call (e.g. a refused request) the evaluation is skipped
+            record["agent_evaluation"] = await self._run_evaluation(
+                self.evaluate_concierge_subagents(call_recorder, eval_name)
+            )
+
+        return record
+
+    async def evaluate_concierge_final_answer(self, conversation, eval_name):
+        """Score the concierge's last reply with the final-answer evaluators, in the context of the conversation.
+
+        The item holds the user's messages and the concierge's replies, text only, as for the other set-ups.
+        The judge gets everything up to the last user message as the query and the last reply as the
+        response (the agent evaluators receive both as message lists). With one message this is the same
+        input as evaluate_agent_final_answer; evaluate_agent cannot take earlier turns, so the item is built here.
+        """
+        return await self._evaluate_items([EvalItem(conversation=conversation)], self.final_answer_evaluators, eval_name)
+
+    async def evaluate_concierge_subagents(self, call_recorder, eval_name):
+        """Score every subagent call of a concierge conversation with the subagent's evaluators.
+
+        Counterpart of evaluate_agents for the Magentic workflow, with the same result format: one item
+        per call, holding the task the concierge wrote (with the date line), the subagent's reply with its
+        function tool calls and, as context, what its tools returned. The concierge itself is not scored
+        here: its routing is checked by the rule checks and its answer by the final-answer judge.
+        """
+        items_by_agent = {}
+        for agent, task_messages, response in call_recorder.calls:
+            items_by_agent.setdefault(agent.name, []).append(self._agent_item(task_messages, response, agent))
+        return await self._evaluate_agent_items(items_by_agent, eval_name)
+
+    def _add_concierge_scope_usage(self, token_usage, scopes):
+        """Add the tokens of all scope checks of a conversation as one scopeGuard entry next to the agents."""
+        checks = [scope for scope in scopes if not scope.skipped]
+        if not checks:
+            return token_usage
+        guard = self._sum_counts(self._usage_to_dict(scope.usage, 1) for scope in checks)
+        return {
+            "total": self._sum_counts([token_usage["total"], guard]),
+            "per_agent": {SCOPE_GUARD_NAME: guard, **token_usage["per_agent"]},
+        }
+
+    @classmethod
+    def _concierge_subagent_calls(cls, call_recorder):
+        """Return {subagent: {"calls": n, "tool_calls": {tool: n}}}; ask_user shows how often a subagent asked."""
+        activity = {}
+        for agent, _, response in call_recorder.calls:
+            entry = activity.setdefault(agent.name, {"calls": 0, "tool_calls": {}})
+            entry["calls"] += 1
+            for tool_name, count in cls.count_tool_calls(response).items():
+                entry["tool_calls"][tool_name] = entry["tool_calls"].get(tool_name, 0) + count
+        return activity
+
+    @staticmethod
+    def _print_concierge_turn(turn, next_message):
+        """Print a reply of a multi-turn test case and the next user message."""
+        print("\n" + "=" * 50)
+        print("CONCIERGE (earlier turn):")
+        print("=" * 50)
+        print(turn["reply"])
+        print("=" * 50)
+        print(f"\nYou: {next_message}")
 
     # ------------------------------------------------------------------ scope guard
     async def _check_scope(self, record, test_case):

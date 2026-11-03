@@ -7,6 +7,8 @@ from pydantic import BaseModel, Field
 
 # Name under which the guard's tokens appear in the evaluation reports, next to the agents
 SCOPE_GUARD_NAME = "scopeGuard"
+# Characters of the assistant's previous reply given as context (its end, where the questions are)
+PREVIOUS_REPLY_CHARS = 1500
 
 
 class ScopeDecision(BaseModel):
@@ -79,15 +81,24 @@ class ScopeGuard:
         self.refusal = settings["refusal"]
         self.reasoning_effort = settings["reasoning_effort"]
 
-    async def check(self, user_message: str) -> ScopeCheck:
-        """Classify one user message (as the user wrote it, without the date line)."""
+    async def check(self, user_message: str, previous_reply: str | None = None) -> ScopeCheck:
+        """Classify one user message (as the user wrote it, without the date line).
+
+        previous_reply: the assistant's previous reply in a multi-turn chat (concierge_agent.py). Without it,
+        a short answer such as "yes" or "three days" could not be told apart from small talk. Only its end
+        is passed, between <previous_reply> tags, as context and not as the message to classify.
+        """
         if not self.enabled:
             return ScopeCheck(in_scope=True, reason="Scope guard is off (scope_guard.enabled in config.yaml).", skipped=True)
+
+        text = f"<message>\n{user_message}\n</message>"
+        if previous_reply:
+            text = f"<previous_reply>\n{previous_reply[-PREVIOUS_REPLY_CHARS:]}\n</previous_reply>\n\n{text}"
 
         started = time.perf_counter()
         try:
             response = await self.chat_client.get_response(
-                [Message("user", [f"<message>\n{user_message}\n</message>"])],
+                [Message("user", [text])],
                 options={
                     "instructions": self.instructions,
                     "response_format": ScopeDecision,

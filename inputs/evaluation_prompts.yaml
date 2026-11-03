@@ -1,4 +1,6 @@
-# Test prompts for magentic_exe_and_eval.py and single_agent_exe_and_eval.py.
+# Test prompts for magentic_exe_and_eval.py and single_agent_exe_and_eval.py. The concierge evaluation
+# (concierge_agent_and_eval.py) reads inputs/concierge_evaluation_prompts.yaml: the same requests with its own
+# expectations, so keep the queries of the active cases in sync.
 # Every test case is one user request.
 #
 # Required fields:

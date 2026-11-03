@@ -2,8 +2,11 @@
 
 import copy
 import json
+from collections.abc import Mapping
 
-from agent_framework import AgentContext, AgentMiddleware, FunctionInvocationContext
+from agent_framework import AgentContext, AgentMiddleware, FunctionInvocationContext, Message, ResponseStream
+
+from utils.utils import TODAYS_DATE_PREFIX, add_todays_date
 
 # Contents of an agent's own tool loop: the function call and its raw result
 TOOL_CONTENT_TYPES = {"function_call", "function_result"}
@@ -55,22 +58,75 @@ async def log_manager_decisions(context: AgentContext, call_next):
 
 
 async def log_agent_replies(context: AgentContext, call_next):
-    """Agent middleware for the specialist agents: print what the agent sent back to the manager.
+    """Agent middleware for the specialist agents: print what the agent sent back to the manager
+    (Magentic) or to the concierge (concierge subagents).
 
-    The reply is what the manager bases its next decision on. A reasoning summary is printed
-    too when the model returned one.
+    The reply is what the manager or the concierge bases its next step on. A reasoning summary
+    is printed too when the model returned one.
     """
     await call_next()
 
     agent_name = context.agent.name
-    for message in getattr(context.result, "messages", None) or []:
+    on_final_response(context, lambda response: _print_agent_reply(agent_name, response))
+
+
+def _print_agent_reply(agent_name, response):
+    for message in getattr(response, "messages", None) or []:
         for content in message.contents:
             if content.type == "text_reasoning" and content.text:
                 print(f"[AGENT] {agent_name} reasoning: {content.text[:REPLY_PREVIEW_CHARS]}")
 
-    reply = getattr(context.result, "text", None) or "(empty reply)"
+    reply = getattr(response, "text", None) or "(empty reply)"
     shortened = " ..." if len(reply) > REPLY_PREVIEW_CHARS else ""
     print(f"[AGENT] {agent_name} replied: {reply[:REPLY_PREVIEW_CHARS]}{shortened}")
+
+
+def on_final_response(context: AgentContext, handle):
+    """Call handle(response) with the agent's final response, also when the run streams.
+
+    In a non-streaming run (Magentic) context.result is the response. In a streaming run (an agent
+    called as a tool: as_tool() always streams) it is a ResponseStream, and the final response exists
+    only after the caller has read the stream, so handle runs as a result hook of the stream.
+    Diagnostics must never break a run, so an error in handle is only printed.
+    """
+
+    def safe_handle(response):
+        try:
+            handle(response)
+        except Exception as error:
+            print(f"[MIDDLEWARE] {context.agent.name}: check of the final response failed ({error})")
+
+    if isinstance(context.result, ResponseStream):
+        # A result hook that returns None leaves the final response unchanged
+        context.result.with_result_hook(lambda response: safe_handle(response))
+    elif context.result is not None:
+        safe_handle(context.result)
+
+
+async def add_todays_date_to_task(context: AgentContext, call_next):
+    """Agent middleware for the concierge's subagents: put today's date in front of the task.
+
+    A subagent called as a tool receives only the task the concierge wrote, not the user's message
+    with its date line. It needs the date to turn relative dates (also in the user's answer to its
+    own question) into YYYY-MM-DD dates and to check the 15-day forecast range.
+    """
+    if context.messages:
+        task = context.messages[-1]
+        if task.role == "user" and task.text and not task.text.startswith(TODAYS_DATE_PREFIX):
+            # A new message: the original one belongs to the caller
+            context.messages[-1] = Message("user", [add_todays_date(task.text)])
+    await call_next()
+
+
+async def log_delegations(context: FunctionInvocationContext, call_next):
+    """Function middleware for the concierge: print every task it gives a subagent (agent as a tool).
+
+    The subagent's reply is printed by log_agent_replies on the subagent itself.
+    """
+    arguments = context.arguments
+    task = arguments.get("task") if isinstance(arguments, Mapping) else getattr(arguments, "task", arguments)
+    print(f"[CONCIERGE] -> {context.function.name}: {task}")
+    await call_next()
 
 
 def _parse_progress_ledger(text):
@@ -112,7 +168,10 @@ class BlockedReplyMonitor(AgentMiddleware):
         await call_next()
 
         agent_name = context.agent.name
-        details = _describe_blocked_reply(context.result)
+        on_final_response(context, lambda response: self._check_reply(agent_name, response))
+
+    def _check_reply(self, agent_name, response):
+        details = _describe_blocked_reply(response)
         self._last_reply_blocked[agent_name] = details is not None
         if details is None:
             return

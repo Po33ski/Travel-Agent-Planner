@@ -1,11 +1,16 @@
+import threading
 from typing import Any, Dict
-from agent_framework import tool
+from agent_framework import FunctionTool, tool
 from agent_framework.orchestrations import MagenticPlanReviewRequest, MagenticPlanReviewResponse
 
 # Human in the loop for the interactive chat: the user approves the manager's plan and the
 # hotels that hotelAgent chose. Enter alone approves.
 APPROVE_ANSWERS = ("", "y", "yes", "t", "tak")
 REJECT_ANSWERS = ("n", "no", "nie")
+
+# The concierge can call several subagents at once (one worker thread each), so their questions
+# are shown one after another instead of mixing in the console
+_QUESTION_LOCK = threading.Lock()
 
 
 def review_plan(request: MagenticPlanReviewRequest) -> MagenticPlanReviewResponse:
@@ -69,3 +74,53 @@ def ask_user_about_hotels(hotels: str) -> Dict[str, Any]:
 def approve_hotels_automatically(hotels: str) -> Dict[str, Any]:
     """Stand-in for ask_user_about_hotels in the evaluation: approves every choice without asking."""
     return {"approved": True}
+
+
+def create_ask_user_tool(topic: str) -> FunctionTool:
+    """Return the ask_user tool of one concierge subagent (execution/concierge_agent.py).
+
+    The subagents run as tools of the concierge (agent as a tool), and the framework cannot pause
+    a subagent's tool call and resume it through the concierge's run. So the subagent asks the user
+    itself, in the console, while its run waits. Its system prompt limits the questions to its topic.
+
+    Args:
+        topic: What the subagent is responsible for, shown above its question (e.g. "hotels").
+    """
+
+    @tool(name="ask_user")
+    def ask_user(question: str) -> Dict[str, Any]:
+        """
+        Tool function that asks the user one question in the console and returns the answer.
+        Agent Framework runs a sync tool in a worker thread, so input() does not block the event loop.
+
+        Args:
+            question: The question in the user's language.
+
+        Returns:
+            {"answer": "..."}, or {"skipped": True} when the user only pressed Enter.
+        """
+        with _QUESTION_LOCK:
+            print("\n" + "=" * 50)
+            print(f"QUESTION FROM THE {topic.upper()} SPECIALIST:")
+            print("=" * 50)
+            print(question)
+            print("=" * 50)
+            try:
+                answer = input("Your answer (Enter to skip): ").strip()
+            except (EOFError, KeyboardInterrupt):
+                answer = ""
+
+        if not answer:
+            return {"skipped": True}
+        return {"answer": answer}
+
+    return ask_user
+
+
+# The concierge's subagents have ask_user in their server-side definition, so the evaluation must also
+# run one. Nobody answers there: every question is skipped, as when the user presses Enter, and the
+# subagent goes on with its defaults (the hotel subagent keeps its choice).
+@tool(name="ask_user")
+def skip_concierge_questions(question: str) -> Dict[str, Any]:
+    """Stand-in for ask_user in the concierge evaluation: skips every question without asking."""
+    return {"skipped": True}

@@ -1,11 +1,12 @@
 # Travel Agent Planner
 
-This project contains **two approaches** to the same travel assistant. They are built side by side so that they can be compared and the better one chosen:
+This project contains **three approaches** to the same travel assistant. They are built side by side so that they can be compared and the better one chosen:
 
 1. **Multi-agent orchestration.** A manager agent and four specialist agents, each with one tool. This approach is more expensive and slower, because every request takes many model calls. In return it is more deterministic: each tool is encapsulated in its own agent with narrow instructions.
 2. **Single agent.** One agent with all four tools. This approach is cheaper and faster, but carries a higher risk of non-deterministic behaviour, because one prompt holds every rule and every tool. Its low cost makes a stronger model such as `gpt-5.6-terra` affordable, and a stronger model makes the agent considerably more reliable. Running the whole team on such a model would be too expensive.
+3. **Concierge with subagents.** A concierge agent leads a conversation with the user over many turns and calls four subagents as tools (the Agent Framework *agent as a tool* pattern). The subagents have the same tools as the team's specialists, and each may ask the user a short question about its own topic. This approach is built for a step-by-step conversation rather than for one complete request.
 
-The rest of this introduction describes the multi-agent approach, which the chat uses. The single agent is described [below](#single-agent-variant).
+The rest of this introduction describes the multi-agent approach, which the main chat uses. The single agent and the concierge are described [below](#single-agent-variant).
 
 An AI assistant that helps you plan a trip to a chosen destination anywhere in the world. A **manager agent** plans the work and delegates it to four **specialist agents**, all hosted server-side in **Azure AI Foundry Agent Service**:
 
@@ -30,6 +31,12 @@ The chat does not use `travelAgent`. It exists so that the [evaluation](#evaluat
 
 ![Travel Agent Planner single-agent architecture](docs/single_agent_architecture.svg)
 
+### Concierge variant
+
+The third approach is a conversation, not a single task. `conciergeAgent` (`gpt-5.6-luna`) talks to the user over many turns and remembers them. It calls four **subagents** on `gpt-5-mini` as tools: `ragDataSubagent`, `webDataSubagent`, `weatherSubagent` and `hotelSubagent`, with the same data tools as the team's specialists. This is the Agent Framework **agent as a tool** pattern (`FoundryAgent.as_tool()`): the concierge decides when to call which subagent, a subagent sees only the task the concierge wrote, and the concierge sees only the subagent's reply.
+
+Unlike the team's specialists, each subagent may ask the user a short question itself, but only about its own topic (interests, citizenship for visa rules, travel dates, hotel wishes and the hotel choice), through its `ask_user` tool. The concierge asks only what it needs to choose the next step, and ends every reply with proposals of what to do next. It has its own chat, `execution/concierge_agent.py`, and its own evaluation, `evaluation/concierge_agent_and_eval.py`. See [Concierge variant](#concierge-variant-concierge_agentpy) for the details.
+
 ## Table of contents
 
 1. [Repository layout](#repository-layout)
@@ -50,30 +57,33 @@ The chat does not use `travelAgent`. It exists so that the [evaluation](#evaluat
 |---|---|
 | `resource_deployment.bicep` | Azure infrastructure: Foundry resource and project, model deployments, AI Search, Storage, Speech, Language, Cosmos DB, Key Vault with all settings and keys, knowledge base connection and role assignments |
 | `rag/rag_setup.py` | Uploads the travel guide and builds the Foundry IQ knowledge source and knowledge base |
-| `agents/<agent>_deployment.py` | One script per agent. Creates or updates the RAI policy and the server-side agent (system prompt and tools) |
-| `agents/<agent>_config.yaml` | One file per agent: agent name and system prompt |
+| `agents/magentic/<agent>_deployment.py` | One script per agent of the Magentic team. Creates or updates the RAI policy and the server-side agent (system prompt and tools) |
+| `agents/magentic/<agent>_config.yaml` | One file per agent of the Magentic team: agent name and system prompt |
+| `agents/concierge/` | Deployment scripts and config files (agent name and system prompt) of the concierge variant: `conciergeAgent` and its four subagents |
 | `execution/agent_execution.py` | Interactive command-line chat. Asks for the user name and e-mail address, builds the Magentic workflow, asks the user to approve the manager's plan, runs the weather, hotel search and hotel review tools locally, saves the conversation and preferences to Cosmos DB, converts the final answer to speech and offers to save a trip summary and keywords |
+| `execution/concierge_agent.py` | Interactive command-line chat with the concierge. Asks for the user name and e-mail address, keeps one conversation for the whole chat, runs the subagents as tools of the concierge together with their local tools (weather, hotel search, `ask_user`), and at the end saves the conversation and offers to save a trip summary and keywords |
 | `evaluation/magentic_exe_and_eval.py` | Runs the test prompts through the Magentic workflow, evaluates every run and saves the report in `outputs/` |
 | `evaluation/single_agent_exe_and_eval.py` | The same evaluation for the single agent `travelAgent` |
+| `evaluation/concierge_agent_and_eval.py` | The same evaluation for the concierge and its subagents, with test conversations from `inputs/concierge_evaluation_prompts.yaml` |
 | `agents/single_agent/` | Deployment script and config file (agent name and system prompt) of the single agent `travelAgent` |
 | `config.yaml` | Guardrail (RAI) settings shared by all agents, profile TTL for Cosmos DB, the travel history limits, the scope guard (classifier prompt and refusal), the tracing settings, the NLP sentiment threshold and the evaluation settings |
-| `classes/evaluate_services.py` | `EvaluateService`: Foundry evaluators for the final answer and for every agent, rule checks, token counting and the report, for a workflow or a single agent. `TokenUsageMiddleware`: records the token usage of every agent call |
+| `classes/evaluate_services.py` | `EvaluateService`: Foundry evaluators for the final answer and for every agent, rule checks, token counting and the report, for a workflow, a single agent or the concierge (the `*_concierge_*` methods). `TokenUsageMiddleware`: records the token usage of every agent call. `ConciergeCallRecorder`: records every subagent call of the concierge for its evaluation |
 | `classes/secret_manager_services.py` | `SecretManager`: reads secrets from Key Vault and caches them in memory |
 | `classes/cosmos_memory_services.py` | `CosmosMemory`: user profiles, preferences, travel history and conversation history in Cosmos DB |
-| `classes/travel_history_provider.py` | `TravelHistoryProvider`: Agent Framework context provider that gives the manager the user's saved travel history |
+| `classes/travel_history_provider.py` | `TravelHistoryProvider`: Agent Framework context provider that gives the manager (or the concierge) the user's saved travel history |
 | `classes/azure_nlp_services.py` | `AzureNLPService`: language detection, summarization, key phrases and other Azure AI Language features |
 | `classes/foundry_iq_services.py` | `FoundryIQService`: blob upload, knowledge source, ingestion, knowledge base, MCP tool |
 | `classes/weather_services.py` | `WeatherService` and the `get_forecast_weather` / `get_current_weather` tools |
 | `classes/google_services.py` | `GooglePlacesService` (Google Maps Places API) and the `search_hotels_google_maps` tool |
-| `classes/scope_guard_services.py` | `ScopeGuard`: classifies every user message with `gpt-5-mini` before the team or the single agent runs, and refuses messages that are not travel requests (see [Scope guard](#scope-guard)) |
-| `classes/human_review_services.py` | Human in the loop for the chat: `review_plan` (plan review in the console), the `ask_user_about_hotels` tool and its evaluation stand-in `approve_hotels_automatically` |
+| `classes/scope_guard_services.py` | `ScopeGuard`: classifies every user message with `gpt-5-mini` before the team, the single agent or the concierge runs, and refuses messages that are not travel requests (see [Scope guard](#scope-guard)) |
+| `classes/human_review_services.py` | Human in the loop for the chats: `review_plan` (plan review in the console), the `ask_user_about_hotels` tool and its evaluation stand-in `approve_hotels_automatically`, and `create_ask_user_tool` (the `ask_user` tool of the concierge's subagents) and its evaluation stand-in `skip_concierge_questions` |
 | `classes/speech_services.py` | `AzureSpeechService` and the `text_to_speech` helper |
 | `classes/rai_policies_services.py` | `RaiPolicyManager`: builds and deploys the RAI policy from `config.yaml` |
-| `utils/utils.py` | `add_todays_date`, which puts today's date in front of every task, and helpers for normalising weather API responses |
+| `utils/utils.py` | `add_todays_date`, which puts today's date in front of every task, the console login of both chats (`ask_user_name`, `ask_user_email`) and helpers for normalising weather API responses |
 | `utils/split_travel_guide.py` | Splits `inputs/world_city_travel_guide.md` into one file per city in `inputs/travel_guide/`, the input of `rag_setup.py` |
-| `utils/agent_middleware.py` | Middleware shared by the run scripts: `log_tool_calls`, `log_manager_decisions`, `log_agent_replies`, `BlockedReplyMonitor` and `drop_foreign_tool_contents` |
+| `utils/agent_middleware.py` | Middleware shared by the run scripts: `log_tool_calls`, `log_manager_decisions`, `log_agent_replies`, `BlockedReplyMonitor`, `drop_foreign_tool_contents`, and for the concierge `log_delegations` and `add_todays_date_to_task` |
 | `utils/observability.py` | `enable_tracing`: sends the OpenTelemetry traces of the chat or an evaluation run to Application Insights (see [Tracing](#tracing)) |
-| `inputs/` | Source documents for the knowledge base: `travel_guide/` (the guide split into one file per city, uploaded by `rag_setup.py`) and the full guide it was split from (`world_city_travel_guide.md`, `.pdf`) and the test prompts for the evaluation (`evaluation_prompts.yaml`) |
+| `inputs/` | Source documents for the knowledge base: `travel_guide/` (the guide split into one file per city, uploaded by `rag_setup.py`) and the full guide it was split from (`world_city_travel_guide.md`, `.pdf`) and the test prompts for the evaluation (`evaluation_prompts.yaml`, and `concierge_evaluation_prompts.yaml` for the concierge) |
 | `outputs/` | Audio file with the spoken final answer and the evaluation reports (`evaluation_<workflow>_<timestamp>.json`) |
 | `scripts/` | Step-by-step CLI commands for environment setup, deployment and deletion |
 | `docs/` | The two architecture diagrams shown at the top of this README |
@@ -200,11 +210,11 @@ This uploads every file of the travel guide folder to Blob Storage and deletes b
 Run all five scripts. The order does not matter.
 
 ```powershell
-python agents/manager_agent_deployment.py
-python agents/rag_data_agent_deployment.py
-python agents/web_data_agent_deployment.py
-python agents/weather_agent_deployment.py
-python agents/hotel_agent_deployment.py
+python agents/magentic/manager_agent_deployment.py
+python agents/magentic/rag_data_agent_deployment.py
+python agents/magentic/web_data_agent_deployment.py
+python agents/magentic/weather_agent_deployment.py
+python agents/magentic/hotel_agent_deployment.py
 ```
 
 Each script creates or updates the `StrictGuardrail` RAI policy, then creates a new version of its agent with the system prompt, tools and policy attached.
@@ -213,6 +223,16 @@ Optional: deploy the single agent `travelAgent`, which only the [evaluation](#ev
 
 ```powershell
 python agents/single_agent/travel_agent_deployment.py
+```
+
+Optional: deploy the concierge and its four subagents, which only the [concierge chat](#concierge-variant-concierge_agentpy) uses.
+
+```powershell
+python agents/concierge/concierge_agent_deployment.py
+python agents/concierge/rag_data_subagent_deployment.py
+python agents/concierge/web_data_subagent_deployment.py
+python agents/concierge/weather_subagent_deployment.py
+python agents/concierge/hotel_subagent_deployment.py
 ```
 
 > Run the scripts by path, as shown. `python -m agents.<script>` does not work when the `openai-agents` package is installed, because that package is also imported as `agents`. The scripts in `agents/`, `execution/`, `evaluation/` and `rag/` add the project root to the import path themselves; the last three also switch to the project root, so `config.yaml`, `inputs/` and `outputs/` are found from any working directory.
@@ -250,14 +270,23 @@ The chat stops twice to ask you (see [Human in the loop](#human-in-the-loop)):
 - **`PLAN:`** before any agent runs. Press Enter (or `y`/`t`) to start, or type what to change, for example "skip the weather, add hotels near the beach". The manager plans again and shows the new plan.
 - **`HOTEL REVIEW:`** after the hotel agent has chosen hotels. Press Enter to accept, `n` to get other hotels, or type what you want instead, for example "closer to the beach". The agent chooses once more and does not ask again.
 
+**Chat with the concierge** (deploy the concierge agents first, see step 7):
+
+```powershell
+python execution/concierge_agent.py
+```
+
+The sign-in is the same. Then talk to the concierge as in a conversation: it remembers the earlier messages, so you can start with "Lisbon next week?" and add details later. Each reply ends with proposals of what to do next; answer them, or ask for something else. While the concierge works, a subagent may stop with `QUESTION FROM THE <TOPIC> SPECIALIST:` (for example the hotel specialist asking what matters for your hotel, and later whether its choice is OK). Type your answer, or press Enter to skip it. The console shows the concierge's tasks as `[CONCIERGE] -> <subagent>: <task>` lines and the subagents' replies as `[AGENT]` lines. When you type `exit` or `quit`, the chat saves the conversation and offers to save a summary and keywords. See [Concierge variant](#concierge-variant-concierge_agentpy).
+
 ### 9. Evaluate the agents
 
 ```powershell
 python evaluation/magentic_exe_and_eval.py        # the Magentic team
 python evaluation/single_agent_exe_and_eval.py    # the single agent (deploy travelAgent first, see step 7)
+python evaluation/concierge_agent_and_eval.py     # the concierge (deploy the concierge agents first, see step 7)
 ```
 
-Both scripts need only `KEY_VAULT_URL`. They run the test prompts from `inputs/evaluation_prompts.yaml`, score every answer and save a report in `outputs/`. See [Evaluation](#evaluation) for the metrics and the report.
+All three scripts need only `KEY_VAULT_URL`. They run the test prompts from `inputs/evaluation_prompts.yaml` (the concierge: `inputs/concierge_evaluation_prompts.yaml`), score every answer and save a report in `outputs/`. See [Evaluation](#evaluation) for the metrics and the report.
 
 ---
 
@@ -373,7 +402,7 @@ Role assignments for a fully managed-identity setup (Search → Storage, Search 
 
 ## The agents
 
-All five agents are **prompt agents** (`PromptAgentDefinition`) hosted in Azure AI Foundry Agent Service. Each specialist has exactly one tool.
+All five agents of the team are **prompt agents** (`PromptAgentDefinition`) hosted in Azure AI Foundry Agent Service. Each specialist has exactly one tool. The agents of the [concierge variant](#concierge-variant-concierge_agentpy) are described separately.
 
 | Agent | Model | Tool | Role |
 |---|---|---|---|
@@ -383,7 +412,7 @@ All five agents are **prompt agents** (`PromptAgentDefinition`) hosted in Azure 
 | `weatherAgent` | `gpt-5-mini` | `get_forecast_weather` | Daily weather forecast for the destination and dates |
 | `hotelAgent` | `gpt-5-mini` | `search_hotels_google_maps`, `ask_user_about_hotels` | The hotels that best match the user's preferences, with ratings, reasons and links |
 
-### Deployment (`agents/<agent>_deployment.py`)
+### Deployment (`agents/<variant>/<agent>_deployment.py`)
 
 Each script does the same four things for its own agent:
 
@@ -392,7 +421,7 @@ Each script does the same four things for its own agent:
 3. Defines the agent's tool (see [Tools](#tools)). The manager has none.
 4. Calls `project_client.agents.create_version(...)`, which creates a new agent version with the instructions, tool and RAI config.
 
-The manager script takes its model from the `LLM-MODEL-DEPLOYMENT-NAME` secret. The four specialist scripts take theirs from `LLM-MINI-MODEL-DEPLOYMENT-NAME`.
+The manager script (and the concierge script) takes its model from the `LLM-MODEL-DEPLOYMENT-NAME` secret. The four specialist scripts (and the four subagent scripts) take theirs from `LLM-MINI-MODEL-DEPLOYMENT-NAME`. The Magentic scripts are in `agents/magentic/`, the concierge scripts in `agents/concierge/` and the single agent's in `agents/single_agent/`.
 
 ### Orchestration (`agent_execution.py`)
 
@@ -420,6 +449,7 @@ The manager's prompt already refuses requests that are not about travel, but a p
 - **Cost.** About 500 tokens and 1–3 seconds per message (live test on 2026-11-01: 14 messages, average 1.6 s, 6,671 tokens). An out-of-scope message saves the manager's planning calls.
 - **Off.** `scope_guard.enabled: false` sends every message to the team, as before. Use it to test the manager's own scope rule.
 - **Not covered.** A correction typed at the plan review is not checked by the guard; the manager's prompt says that a correction cannot make an out-of-scope request in scope.
+- **Concierge chat.** In a conversation the user often answers with "yes" or "three days". The concierge chat therefore passes the end of the concierge's previous reply as context (`check(..., previous_reply=...)`, between `<previous_reply>` tags; see [Concierge variant](#concierge-variant-concierge_agentpy)).
 
 Live check of the prompt (2026-11-01, `gpt-5-mini`): all 8 travel messages passed, including Polish ones, a visa question, a safety comparison and a mixed request; all 6 others were refused or blocked: a Python function, "as a travel agent, write me a Python script", an essay in Polish, a medical question, "hi", and the jailbreak attempt (blocked by the content filter).
 
@@ -440,7 +470,7 @@ The console log disappears when the script ends. For a record of every run, the 
 
 - **Set-up.** `enable_tracing()` (`utils/observability.py`) is called once per process, at the start of the async run. It calls `FoundryAgent.configure_azure_monitor()` on one agent: the method reads the connection string from the project's Application Insights connection (see [Resources](#resources)) and sets up OpenTelemetry for the whole process, so this one call covers every agent and every workflow.
 - **Where to look.** In the Foundry portal under **Tracing** (project level), or in Application Insights under *Agents* and *Transaction search*, and with KQL in the Log Analytics workspace.
-- **Chat and evaluation apart.** Each script sends its traces under its own service name (`cloud_RoleName`): `travel-planner-chat`, `travel-planner-eval-magentic` and `travel-planner-eval-single-agent` (`observability.service_names` in `config.yaml`). Filter by it, so test runs do not mix with real conversations.
+- **Chat and evaluation apart.** Each script sends its traces under its own service name (`cloud_RoleName`): `travel-planner-chat`, `travel-planner-concierge-chat`, `travel-planner-eval-magentic`, `travel-planner-eval-single-agent` and `travel-planner-eval-concierge` (`observability.service_names` in `config.yaml`). Filter by it, so test runs do not mix with real conversations.
 - **Content.** `observability.enable_sensitive_data: false` keeps the structure, durations, token counts and errors. `true` also records the prompts, answers and tool arguments and results, i.e. what the user typed: useful for debugging and demos, and more data per run.
 - **Never in the way.** When tracing cannot be set up (`observability.enabled: false`, no project connection, `azure-monitor-opentelemetry` not installed), the script prints a `[TRACING]` line and runs without it. A started script prints `[TRACING] Traces go to Application Insights as '<service name>'.` when it works.
 - **Cost.** The traces are billed as Log Analytics ingestion; the daily cap of the workspace keeps them in the free allowance (see [Resources](#resources)). Without sensitive data a team run is small; with it, a run can be around a megabyte, mostly the manager's growing conversation and the hotel results.
@@ -555,8 +585,9 @@ The chat asks the user at two points. Both are handled in `classes/human_review_
 - **Plan review.** `MagenticBuilder(enable_plan_review=True)` makes the workflow stop after each plan (the first one and every replan after a stall) with a `MagenticPlanReviewRequest`. `workflow.run()` then returns the pending request instead of the answer, so the chat runs the workflow directly (not through `workflow.as_agent()`): `run_with_plan_review()` shows the plan with `review_plan()` and sends the response back with `workflow.run(responses=...)` until the final answer comes. Magentic can only approve or revise a plan, not reject it: a correction goes to the manager as a user message and it plans again. Approving costs no model call; each correction costs one replan.
 - **Hotel review.** `hotelAgent` has a second local function tool, `ask_user_about_hotels(hotels)`. After choosing the hotels for a city it calls the tool once; the tool prints the choice and reads the answer with `input()` (Agent Framework runs a sync tool in a worker thread, so the event loop is not blocked). It returns `{"approved": true}` or `{"approved": false, "comment": "..."}`. After a rejection the agent chooses again, first from the results it already has and, when none fits the comment, with one more search; it does not ask again. The review happens inside the agent's turn, so the manager only sees the final choice and a line saying that the user rejected the first one.
 - **Evaluation.** The evaluation has nobody to answer: it builds the workflow without plan review and gives `hotelAgent` `approve_hotels_automatically`, a tool with the same name that always approves. The single agent `travelAgent` has no review tool.
+- **Concierge subagents.** In the concierge chat every subagent has an `ask_user` tool and asks the user directly, within its topic (see [Concierge variant](#concierge-variant-concierge_agentpy)).
 
-### Behaviour (system prompts in `agents/*_config.yaml`)
+### Behaviour (system prompts in `agents/magentic/*_config.yaml`)
 
 **`managerAgent`**
 
@@ -578,11 +609,41 @@ The chat asks the user at two points. Both are handled in `classes/human_review_
 - **`weatherAgent`** reports max/min temperature, precipitation probability, wind speed and conditions for each day, and bases packing tips on the actual data.
 - **`hotelAgent`** passes the user's hotel preferences to the search as a few keywords and recommends the 2 or 3 returned hotels that match best, the best match first. It prefers a hotel whose data (type, address, summary, guest reviews, rating, amenities) confirms a preference over one that is only highly rated; without preferences it picks well-rated hotels with many reviews. Only the hotel name is required: the reason for the match, the rating, the price category and the links are added when the results contain them, and a preference that the results cannot confirm is named instead of guessed. The agent never states a price per night and ends with one line saying that room prices and availability have to be checked on the hotel's website. Before replying it shows its choice to the user with `ask_user_about_hotels`, once per city; after a rejection it chooses again (with one more search only when none of the results fits the user's comment) and says in one line that the user rejected the first suggestions.
 
+### Concierge variant (`concierge_agent.py`)
+
+The concierge chat uses its own five prompt agents, deployed from `agents/concierge/`. They reuse the team's tools, knowledge base and RAI policy, but have their own names and prompts, so the two variants never share an agent version.
+
+| Agent | Model | Tools | Role |
+|---|---|---|---|
+| `conciergeAgent` | `gpt-5.6-luna` | the four subagents | Leads the conversation, calls the subagents, combines their results and proposes the next steps |
+| `ragDataSubagent` | `gpt-5-mini` | `knowledge_base_retrieve`, `ask_user` | Travel guide; may ask what the user is interested in |
+| `webDataSubagent` | `gpt-5-mini` | `web_search`, `ask_user` | Country information and entry rules; may ask about the citizenship and the length of the stay |
+| `weatherSubagent` | `gpt-5-mini` | `get_forecast_weather`, `ask_user` | Weather forecast; may ask for the travel dates or the exact place |
+| `hotelSubagent` | `gpt-5-mini` | `search_hotels_google_maps`, `ask_user` | Hotels; may ask about the user's wishes and shows its choice for approval |
+
+How it runs:
+
+- **Agent as a tool.** `execution/concierge_agent.py` wraps each subagent in a `FoundryAgent` and passes `subagent.as_tool()` to the concierge's `FoundryAgent`. `as_tool()` turns the agent into a function tool named after the agent, with one string argument, `task`. A Foundry agent cannot receive tool declarations from the client (the service rejects them next to an agent reference, so `FoundryAgent` strips them), so `concierge_agent_deployment.py` declares the same four function tools in the concierge's server-side definition. When the concierge calls one, `FoundryAgent` runs the subagent locally and sends its reply back as the tool result.
+- **Context isolation.** A subagent sees only the task the concierge wrote, never the conversation, and every call is a new, separate conversation of the subagent. The concierge's prompt therefore asks for self-contained tasks (city, dates, the user's language, what the user said about the topic, places to skip). The concierge sees only the subagent's final reply, not its tool calls. The concierge may call several subagents in one step; Agent Framework runs these calls at the same time.
+- **One conversation.** The chat keeps one `AgentSession` for the whole run (`concierge_agent.create_session()`). The service stores the conversation and the session points to its latest response, so the concierge remembers the earlier turns, its subagent calls and their results. The session moves on only after a complete turn: a turn that fails leaves it at the previous one.
+- **Subagents ask the user through `ask_user`.** In Python, a tool approval inside a child agent cannot be resumed interactively through the parent's agent-as-tool call (Microsoft Learn, *Agents as Tools*, "Child tool approvals"): a pause inside a subagent would end the concierge's turn and lose the subagent's state. So each subagent has a local function tool, `ask_user(question)` (`create_ask_user_tool()` in `classes/human_review_services.py`), which prints `QUESTION FROM THE <TOPIC> SPECIALIST:` and reads the answer with `input()` while the subagent waits (a sync tool runs in a worker thread). It returns `{"answer": "..."}`, or `{"skipped": true}` when the user presses Enter. A lock shows the questions of subagents that run at the same time one after another. The prompts limit the questions: only about the subagent's topic, only when the answer changes the result, at most once per task (the hotel subagent: once for the wishes and once for the review of its choice, per city), and never to offer more help.
+- **Today's date.** The chat puts the date line in front of every user message, as the Magentic chat does. A subagent does not see that message, so the `add_todays_date_to_task` middleware puts the date line in front of its task: the subagent needs it for relative dates in the user's answers and for the 15-day forecast range.
+- **Scope guard with context.** A short answer such as "yes" or "three days" cannot be classified on its own, so the chat passes the end of the concierge's previous reply (at most 1,500 characters) between `<previous_reply>` tags; the classifier's instructions say to use it only to understand a short answer. A refused message never reaches the concierge and stays out of its conversation. Answers typed at `ask_user` are not checked by the guard.
+- **Travel history.** The concierge gets the same `TravelHistoryProvider` as the manager, with `once_per_session=True`: the note goes with the first message only and then stays in the stored conversation, instead of being repeated in every turn.
+- **Saved at the end.** When the user quits, the chat saves the whole conversation as one multi-turn fine-tuning example in `conversation_history` (its own short system prompt, then the user's messages and the concierge's replies in turn), with the language detected in the user's messages, and offers to save a summary of the conversation and keywords from the user's messages (`propose_trip_memory()`). Replies that were refused or blocked are left out. The concierge chat does not read the replies out.
+- **Evaluation.** `evaluation/concierge_agent_and_eval.py` (see [Concierge evaluation](#concierge-evaluation-concierge_agent_and_evalpy)).
+- **Middleware.** The concierge has `BlockedReplyMonitor` and `log_delegations`, which prints `[CONCIERGE] -> <subagent>: <task>`. Each subagent has `add_todays_date_to_task`, `BlockedReplyMonitor`, `log_agent_replies` and `log_tool_calls`. `as_tool()` always runs the subagent in streaming mode, where the response exists only after the stream has been read, so `log_agent_replies` and `BlockedReplyMonitor` check the final response of a streaming run through a result hook of the stream. `drop_foreign_tool_contents` is not needed: a subagent never receives another agent's tool calls.
+
+Behaviour (system prompts in `agents/concierge/*_config.yaml`):
+
+- **`conciergeAgent`** keeps the manager's rules for the scope (the same refusal), today's date, the travel history, the delegation order (knowledge base first, web search for what it did not find, web search alone for country information), the 15-day forecast range, hotels only when asked, and accuracy (facts only from the subagents, links unchanged, sources labelled). Different from the manager: it asks the user itself when the destination or the goal is unclear (one short question, at most two), and otherwise acts at once with sensible defaults and leaves the topic questions to the subagents. It calls `weatherSubagent` when the user asks about the weather or for a day-by-day plan within the forecast range, and otherwise offers the forecast as a next step. It uses what the conversation already contains and calls a subagent again only for something new or after a wrong reply. Replies are short (at most 300 words, a day-by-day plan up to 500), and every reply except the refusal ends with one to three concrete next steps the team can do.
+- **The subagents** keep the rules of their team counterparts (tools, sources, output format, places to skip) and reply to the concierge with findings only, without greetings, questions or offers. Each may call `ask_user` within its topic as described above, and its reply says what the user answered, so the concierge can use it.
+
 ---
 
 ## Tools
 
-The single agent `travelAgent` has the first four tools.
+The single agent `travelAgent` has the first four tools. The concierge's subagents have the same four tools plus `ask_user`.
 
 | Tool | Team agent | Type | Where it runs |
 |---|---|---|---|
@@ -591,6 +652,7 @@ The single agent `travelAgent` has the first four tools.
 | `get_forecast_weather` | `weatherAgent` | `FunctionTool` | Locally, in the script that runs the agents |
 | `search_hotels_google_maps` | `hotelAgent` | `FunctionTool` | Locally, in the script that runs the agents |
 | `ask_user_about_hotels` | `hotelAgent` (team only) | `FunctionTool` | Locally: asks the user in the chat console; always approves in the evaluation |
+| `ask_user` | the four concierge subagents | `FunctionTool` | Locally: asks the user one question in the concierge chat console |
 
 ### Foundry IQ knowledge base (`knowledge_base_retrieve`)
 
@@ -602,7 +664,7 @@ The single agent `travelAgent` has the first four tools.
 4. `create_knowledge_base()` creates the knowledge base with `EXTRACTIVE_DATA` output mode (it returns raw chunks and the agent writes the answer) and automatic retrieval reasoning effort.
 5. `create_mcp_tool()` returns an `MCPTool` pointing at the knowledge base MCP endpoint (API version `2026-08-01-preview`). It is restricted to `knowledge_base_retrieve`, with `require_approval="never"` because the tool is read-only, and it authenticates through the `RemoteTool` project connection from the Bicep template.
 
-`rag_setup.py` does not use `setup()` or `wait_for_ingestion()`. It calls `upload_blob()` for every file in `SOURCE_FOLDER_PATH` (`inputs/travel_guide`, 182 files), deletes blobs that are not in the folder, and calls `create_blob_knowledge_source()`. Then it starts the indexer itself and waits for that run on the indexer status: after an update of an existing knowledge source, its status still shows the previous synchronisation, so `wait_for_ingestion()` would return at once. It prints every error and warning of the run and stops on errors and on a `Truncated` warning. Then it deletes the index chunks of blobs that no longer exist, because the generated data source has no deletion detection, and calls `create_knowledge_base()`. Step 5 runs in `agents/rag_data_agent_deployment.py`.
+`rag_setup.py` does not use `setup()` or `wait_for_ingestion()`. It calls `upload_blob()` for every file in `SOURCE_FOLDER_PATH` (`inputs/travel_guide`, 182 files), deletes blobs that are not in the folder, and calls `create_blob_knowledge_source()`. Then it starts the indexer itself and waits for that run on the indexer status: after an update of an existing knowledge source, its status still shows the previous synchronisation, so `wait_for_ingestion()` would return at once. It prints every error and warning of the run and stops on errors and on a `Truncated` warning. Then it deletes the index chunks of blobs that no longer exist, because the generated data source has no deletion detection, and calls `create_knowledge_base()`. Step 5 runs in `agents/magentic/rag_data_agent_deployment.py` (and in `agents/concierge/rag_data_subagent_deployment.py` for the concierge variant).
 
 **Why one file per city.** The generated skillset splits text into chunks of 2,000 characters with a 200-character overlap and ignores headings. The search service is on the free tier, which extracts at most 262,144 characters from one document. The single guide file (500,872 characters) was cut at Luang Prabang, so 94 of the 182 cities were not in the index; the indexer reported it only as a warning. The split files (1.7–4.3k characters) stay far below the limit, a chunk never mixes two cities, and every section heading repeats the city name (`### Kraków: Getting Around`), so each chunk names its city. The files are generated from `inputs/world_city_travel_guide.md` by `utils/split_travel_guide.py`; after a change to the full guide, run it again before `rag_setup.py`.
 
@@ -687,8 +749,8 @@ Speech is not an agent tool. `agent_execution.py` calls `text_to_speech(text, vo
 
 Two things are defined in more than one place:
 
-- **Function tool schemas.** `agents/weather_agent_deployment.py` and `agents/hotel_agent_deployment.py` hold the `FunctionTool` JSON schemas for the server-side agents (`agents/single_agent/travel_agent_deployment.py` holds both for the single agent), and `weather_services.py` / `google_services.py` / `human_review_services.py` hold the `@tool` Python implementations for the client. `ask_user_about_hotels` has two implementations with the same name and parameters: the console one for the chat and `approve_hotels_automatically` for the evaluation. Keep the tool and parameter names in sync.
-- **Agent names.** The `agent_name` in each `agents/<agent>_config.yaml` must match the name used in `agent_execution.py` and `magentic_exe_and_eval.py`, the *Team* section of the manager's system prompt, `expected_agents` / `unexpected_agents` in `inputs/evaluation_prompts.yaml` and the keys of `evaluation.agent_evaluators` in `config.yaml`. An agent whose name is missing from `agent_evaluators` is silently not evaluated.
+- **Function tool schemas.** `agents/magentic/weather_agent_deployment.py` and `agents/magentic/hotel_agent_deployment.py` hold the `FunctionTool` JSON schemas for the server-side agents (`agents/single_agent/travel_agent_deployment.py` holds both for the single agent), and `weather_services.py` / `google_services.py` / `human_review_services.py` hold the `@tool` Python implementations for the client. `ask_user_about_hotels` has two implementations with the same name and parameters: the console one for the chat and `approve_hotels_automatically` for the evaluation. In the concierge variant, the four `agents/concierge/*_subagent_deployment.py` scripts declare `ask_user(question)` (client: `create_ask_user_tool()`), the weather and hotel subagents also declare their data tool, and `concierge_agent_deployment.py` declares the four subagents as tools: name = the subagent's `agent_name`, one argument `task`, as `as_tool()` creates them. Keep the tool and parameter names in sync.
+- **Agent names.** The `agent_name` in each `agents/magentic/<agent>_config.yaml` must match the name used in `agent_execution.py` and `magentic_exe_and_eval.py`, the *Team* section of the manager's system prompt, `expected_agents` / `unexpected_agents` in `inputs/evaluation_prompts.yaml` and the keys of `evaluation.agent_evaluators` in `config.yaml`. An agent whose name is missing from `agent_evaluators` is silently not evaluated. In the concierge variant, the `agent_name` in each `agents/concierge/<agent>_config.yaml` must match the name in `concierge_agent.py` and `concierge_agent_and_eval.py`, the tool names in `concierge_agent_deployment.py`, the *Specialists* section of the concierge's prompt, `expected_agents` / `unexpected_agents` in `inputs/concierge_evaluation_prompts.yaml` and the keys of `evaluation.agent_evaluators`.
 
 ---
 
@@ -769,25 +831,26 @@ Travel history of this user:
 Travel keywords: muzea, cichy hotel, Lizbona
 ```
 
-The manager's system prompt (section *Travel history*) says that this message comes from the system, is not part of the request and is only an addition to it: the current request always wins. Places the user has already been to are the exception that is always taken into account: they are not recommended again unless the user asks for it, and the manager passes them to the specialists as places to skip (see [Behaviour](#behaviour-system-prompts-in-agents_configyaml)). Users without saved trips get no message. Design decisions:
+The manager's system prompt (section *Travel history*) says that this message comes from the system, is not part of the request and is only an addition to it: the current request always wins. Places the user has already been to are the exception that is always taken into account: they are not recommended again unless the user asks for it, and the manager passes them to the specialists as places to skip (see [Behaviour](#behaviour-system-prompts-in-agentsmagentic_configyaml)). Users without saved trips get no message. Design decisions:
 
 - **Only the manager gets it.** It passes what matters (for example hotel wishes) to the specialists in its instructions, so the note does not cost tokens in every specialist call. Magentic calls the manager several times per task (plan, every progress check, final answer), and the note is sent with each call.
 - **A user message, not instructions.** The Agent Framework memory sample uses `extend_instructions`, but the system prompt of a Foundry agent belongs to the server-side agent version: `FoundryAgent` drops system messages, and provider instructions would be sent as an extra `instructions` field next to the agent reference, which is not documented for Foundry agents.
 - **Not on the workflow agent.** `workflow.as_agent(context_providers=...)` would add a second input message, and Magentic accepts exactly one task message.
-- **Only the chat uses it.** The evaluation scripts have no user profile and no travel history.
+- **Only the chats use it.** The evaluation scripts have no user profile and no travel history. The concierge chat attaches it to the concierge with `once_per_session=True`: the concierge keeps one conversation, so the note is sent with the first message only. It saves the trip summary once, when the chat ends (see [Concierge variant](#concierge-variant-concierge_agentpy)).
 
 ---
 
 ## Evaluation
 
-Two scripts measure answer quality, time and token usage on the same set of test prompts, so the Magentic team can be compared with a single agent:
+Three scripts measure answer quality, time and token usage on the same requests, so the Magentic team, the single agent and the concierge can be compared:
 
 | Script | What it evaluates |
 |---|---|
 | `magentic_exe_and_eval.py` | The Magentic workflow of `agent_execution.py`: the manager and the four specialist agents |
 | `single_agent_exe_and_eval.py` | `travelAgent`, the [single-agent variant](#single-agent-variant): one agent run per prompt, no orchestration |
+| `concierge_agent_and_eval.py` | The [concierge variant](#concierge-variant-concierge_agentpy): one conversation per test case, the concierge and its four subagents (see [Concierge evaluation](#concierge-evaluation-concierge_agent_and_evalpy)) |
 
-Both scripts only run and evaluate the agents. As in the chat, today's date is put in front of every test prompt. They do not ask for a user name, do not write to Cosmos DB and do not produce speech, so test prompts never end up in a user's conversation history. All evaluation logic is in `EvaluateService` (`classes/evaluate_services.py`).
+The scripts only run and evaluate the agents. As in the chat, today's date is put in front of every test prompt. They do not ask for a user name, do not write to Cosmos DB and do not produce speech, so test prompts never end up in a user's conversation history. All evaluation logic is in `EvaluateService` (`classes/evaluate_services.py`).
 
 ### Test prompts (`inputs/evaluation_prompts.yaml`)
 
@@ -848,9 +911,23 @@ The Foundry evaluators run in the Foundry project, not locally: the script uploa
 - A failed evaluation is recorded in the report instead of stopping the script.
 - **Scope guard first, as in the chat.** Both scripts pass a `ScopeGuard` to `EvaluateService`, so every test prompt is checked before the run. A refused prompt runs no agent: its final answer is the refusal, the rule checks run on it (a travel prompt refused by mistake fails `expected_agents` or `expected_tools`), and the LLM judge is skipped. The record holds the check under `scope_guard`, its tokens appear as one more entry `scopeGuard` in `token_usage` (next to the agents, so a run's total includes them), and its duration is added to the run's duration, because the chat user waits for both. `summary.scope_guard_refusals` counts the refused prompts. With the guard on, the `out_of_scope` case tests the guard; set `scope_guard.enabled: false` to test the manager's and `travelAgent`'s own scope rules again.
 - The runs are traced like the chat, under their own service names (see [Tracing](#tracing)). Tracing does not replace `TokenUsageMiddleware`: the report keeps its own token counts, and the traces can be used to check them.
-- Nobody answers during the evaluation: the workflow is built without plan review, and `hotelAgent`'s review tool `ask_user_about_hotels` is replaced by `approve_hotels_automatically`, which approves every choice. The review call still shows up among `hotelAgent`'s tool calls.
+- Nobody answers during the evaluation: the workflow is built without plan review, and `hotelAgent`'s review tool `ask_user_about_hotels` is replaced by `approve_hotels_automatically`, which approves every choice. The review call still shows up among `hotelAgent`'s tool calls. The concierge's subagents get `skip_concierge_questions` instead of `ask_user`.
 
 **Token counting.** `TokenUsageMiddleware` is added to every `FoundryAgent`. After each agent call it reads `usage_details` from the response and adds it to the totals of that agent. The Magentic manager is called by the orchestrator and does not appear in the workflow events as an agent, so the middleware is the only place that sees its usage. The judge's tokens are taken from the evaluation results and counted separately.
+
+### Concierge evaluation (`concierge_agent_and_eval.py`)
+
+The concierge script uses the same `EvaluateService`, the same judge, evaluators, rule checks, token counting and report format, through methods named after the concierge:
+
+- **Test conversations (`inputs/concierge_evaluation_prompts.yaml`, `load_concierge_test_cases`).** The same requests as the active cases of `evaluation_prompts.yaml`, with the same ids, but with expectations that follow the concierge's rules: the subagents' names, and no weather expected unless the user asks for it or for a day-by-day plan within the forecast (the concierge otherwise offers it as a next step). An optional `follow_ups` list adds further user messages to the same conversation; the case `lisbon_follow_up_hotels` asks for hotels in a follow-up that does not name the city.
+- **One conversation per test case (`evaluate_concierge_test_case`).** A new session per test case; the first message and the follow-ups are sent one after another, each with the date line. The scope guard checks every message, with the concierge's previous reply as context, as in the chat. A refused message ends the conversation. The record adds `turns` (every message with its reply and scope check) and `subagent_calls` (calls and tool calls per subagent; `ask_user` shows how often a subagent asked).
+- **Nobody answers the subagents.** `skip_concierge_questions` replaces `ask_user` and returns `{"skipped": true}`, as when the user presses Enter, so a subagent goes on with its defaults and the hotel subagent keeps its choice.
+- **Final answer (`evaluate_concierge_final_answer`).** The last reply, judged by `final_answer_evaluators` with the whole conversation: the judge gets the earlier turns as the query. With one message the input is the same as for the single agent. `evaluate_agent` takes only one query string, so the item is built here.
+- **Subagents (`evaluate_concierge_subagents`).** A subagent runs inside a tool call of the concierge and leaves no workflow events, so `ConciergeCallRecorder` on every subagent records each call (the dated task, the response with its tool calls). Each call is one item, built by `_agent_item` as in the team, and scored with the subagent's evaluators: `ragDataSubagent`, `webDataSubagent`, `weatherSubagent` and `hotelSubagent` in `agent_evaluators` have the same evaluators as their team counterparts. `conciergeAgent` is not scored as an agent: the judge would see neither its rules nor the subagents' work behind its tool calls, so its routing is checked by `expected_agents` / `unexpected_agents` and its answer by the final-answer judge.
+- **Rule checks.** `check_final_answer` on the last reply, with the agents called in the whole conversation. The word limit is `max_answer_words.concierge` (500, the limit of a day-by-day plan; other replies should stay under 300).
+- **Tokens.** `as_tool()` streams the subagents, and the token usage of a streamed run exists only after the stream has been read, so `TokenUsageMiddleware` reads it through a result hook (`on_final_response`). The scope checks of all messages are one `scopeGuard` entry.
+
+The report is `outputs/evaluation_conciergeWorkflow_<timestamp>.json`. For a comparison with the other set-ups, use the cases with the same id and keep in mind that the concierge's expectations differ.
 
 ### Report
 
@@ -867,7 +944,7 @@ The console shows, for every test case, the final answer, the duration and token
 
 An agent called several times has one line per evaluator and call. A skipped or failed evaluation shows its status and error instead.
 
-Each script writes `outputs/evaluation_<name>_<timestamp>.json`, where the name is `travelPlannerWorkflow` or `travelAgent`:
+Each script writes `outputs/evaluation_<name>_<timestamp>.json`, where the name is `travelPlannerWorkflow`, `travelAgent` or `conciergeWorkflow`:
 
 - `summary`: number of runs and failed runs, number of prompts refused by the scope guard, average duration, passed / failed counts and average score per metric (final answer, rule checks, each agent), and tokens in total, on average per run, per agent and for the judge.
 - `cases`: one record per run with the query, the final answer, the duration, the token usage, the rule checks and, under `final_answer_evaluation` and `agent_evaluation`, every evaluator's score with the judge's explanation (`items[].scores[]`).
@@ -876,7 +953,7 @@ The `passed` / `failed` counts of an evaluation count *items*, not evaluators: a
 
 The single agent's records also hold `called_tools`: the tools found in the agent's response and how often each was called. Function tools (`get_forecast_weather`, `search_hotels_google_maps`) are always there. The server-side tools (`knowledge_base_retrieve`, `web_search`) appear when the service reports their calls, which it did in the runs of 2026-10-18, so the test prompts list them under `expected_tools` too, where the team's cases expect `ragDataAgent` or `webDataAgent`.
 
-The two reports have the same format. Compare the metrics in `summary.final_answer`, `summary.rule_checks` and `summary.tokens`.
+The reports have the same format; the concierge's records also hold `turns` and `subagent_calls`. Compare the metrics in `summary.final_answer`, `summary.rule_checks` and `summary.tokens`.
 
 ### Settings (`evaluation` in `config.yaml`)
 
@@ -884,9 +961,10 @@ The two reports have the same format. Compare the metrics in `summary.final_answ
 |---|---|
 | `judge_model_secret` | Key Vault secret with the model deployment used as the LLM judge |
 | `test_cases_path`, `output_dir` | Test prompts file and report folder |
+| `concierge_test_cases_path` | Test conversations of the concierge |
 | `repetitions` | Runs per test case. More than 1 shows how stable the scores are |
 | `timeout_seconds` | How long to wait for one Foundry evaluation run |
-| `max_answer_words` | Word limit of the final answer, as set in the system prompt of the manager (`magentic`) and of the single agent (`single_agent`) |
+| `max_answer_words` | Word limit of the final answer, as set in the system prompt of the manager (`magentic`), of the single agent (`single_agent`) and of the concierge (`concierge`) |
 | `final_answer_evaluators` | Foundry built-in evaluator names for the final answer |
 | `agent_evaluators` | Foundry built-in evaluator names per agent, keyed by the agent name. An agent that is missing is not evaluated |
 | `evaluate_agents` | `false` skips the agent evaluation and saves judge calls |
@@ -906,7 +984,7 @@ Point `judge_model_secret` at another deployment, such as `gpt-5.6-terra`, befor
 
 ## Guardrail configuration: `StrictGuardrail`
 
-Content safety is enforced by a custom **RAI (Responsible AI) policy** attached to **all five agents** of the team and to the single agent `travelAgent`. The policy is defined in `config.yaml`, and `RaiPolicyManager` (`classes/rai_policies_services.py`) deploys it with the Azure management SDK (`azure-mgmt-cognitiveservices`) to the Foundry account.
+Content safety is enforced by a custom **RAI (Responsible AI) policy** attached to **all five agents** of the team, to the single agent `travelAgent` and to the five agents of the concierge variant. The policy is defined in `config.yaml`, and `RaiPolicyManager` (`classes/rai_policies_services.py`) deploys it with the Azure management SDK (`azure-mgmt-cognitiveservices`) to the Foundry account.
 
 ```yaml
 guardrails:

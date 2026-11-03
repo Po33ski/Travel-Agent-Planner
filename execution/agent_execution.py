@@ -1,5 +1,4 @@
 import os
-import re
 import sys
 import asyncio
 import logging
@@ -37,7 +36,7 @@ from utils.agent_middleware import (
     log_tool_calls,
 )
 from utils.observability import enable_tracing
-from utils.utils import add_todays_date
+from utils.utils import add_todays_date, ask_user_email, ask_user_name
 
 # WARNING shows tool-loop problems such as "Maximum consecutive function call errors reached"
 logging.getLogger("agent_framework").setLevel(logging.WARNING)
@@ -52,9 +51,6 @@ FINE_TUNING_SYSTEM_PROMPT = (
     "You are a travel assistant. You plan trips and answer travel questions using a travel guide, "
     "web search, weather forecasts and hotel search, and you never invent facts."
 )
-
-# Demo check only: something@domain.tld
-EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 # =============================================================================
 # AGENT INITIALIZATION
@@ -126,7 +122,7 @@ scope_guard = ScopeGuard(
 
 def create_agents(travel_history: TravelHistoryProvider):
     # 1. Wrap the pre-deployed Foundry project agents.
-    # agent_name must match agent_name in agents/*_config.yaml and the Team section of the manager prompt.
+    # agent_name must match agent_name in agents/magentic/*_config.yaml and the Team section of the manager prompt.
     # drop_foreign_tool_contents: the agents get each other's text answers, not the raw tool calls.
     # Only the manager gets the user's travel history; it passes what matters to the specialists.
     manager_agent = FoundryAgent(
@@ -262,33 +258,6 @@ def propose_trip_memory(
 
     if cosmos_memory.add_trip_memory(user_id, summary, keywords):
         travel_history.refresh()
-
-
-def ask_user_name() -> str | None:
-    """Ask for the user name until a non-empty one is given; None when the user quits."""
-    while True:
-        try:
-            user_name = input("User name: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            return None
-        if user_name:
-            return user_name
-        print("The user name is required.")
-
-
-def ask_user_email(stored_email: str | None) -> str | None:
-    """Ask for the e-mail address until a valid one is given; Enter keeps the stored one. None when the user quits."""
-    prompt = f"E-mail [{stored_email}]: " if stored_email else "E-mail: "
-    while True:
-        try:
-            email = input(prompt).strip()
-        except (EOFError, KeyboardInterrupt):
-            return None
-        if not email and stored_email:
-            return stored_email
-        if EMAIL_PATTERN.match(email):
-            return email
-        print("A valid e-mail address is required.")
 
 
 # Microsoft Agent Frame is built entirely on async programming.
