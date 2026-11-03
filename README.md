@@ -37,6 +37,8 @@ The third approach is a conversation, not a single task. `conciergeAgent` (`gpt-
 
 Unlike the team's specialists, each subagent may ask the user a short question itself, but only about its own topic (interests, citizenship for visa rules, travel dates, hotel wishes and the hotel choice), through its `ask_user` tool. The concierge asks only what it needs to choose the next step, and ends every reply with proposals of what to do next. It has its own chat, `execution/concierge_agent.py`, and its own evaluation, `evaluation/concierge_agent_and_eval.py`. See [Concierge variant](#concierge-variant-concierge_agentpy) for the details.
 
+![Travel Agent Planner concierge architecture](docs/concierge_architecture.svg)
+
 ## Table of contents
 
 1. [Repository layout](#repository-layout)
@@ -86,7 +88,7 @@ Unlike the team's specialists, each subagent may ask the user a short question i
 | `inputs/` | Source documents for the knowledge base: `travel_guide/` (the guide split into one file per city, uploaded by `rag_setup.py`) and the full guide it was split from (`world_city_travel_guide.md`, `.pdf`) and the test prompts for the evaluation (`evaluation_prompts.yaml`, and `concierge_evaluation_prompts.yaml` for the concierge) |
 | `outputs/` | Audio file with the spoken final answer and the evaluation reports (`evaluation_<workflow>_<timestamp>.json`) |
 | `scripts/` | Step-by-step CLI commands for environment setup, deployment and deletion |
-| `docs/` | The two architecture diagrams shown at the top of this README |
+| `docs/` | The three architecture diagrams shown at the top of this README: the Magentic team (`architecture.svg`), the single agent (`single_agent_architecture.svg`) and the concierge (`concierge_architecture.svg`) |
 
 ---
 
