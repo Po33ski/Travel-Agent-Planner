@@ -76,7 +76,7 @@ def approve_hotels_automatically(hotels: str) -> Dict[str, Any]:
     return {"approved": True}
 
 
-def create_ask_user_tool(topic: str) -> FunctionTool:
+def create_ask_user_tool(topic: str, answers_log: list | None = None) -> FunctionTool:
     """Return the ask_user tool of one concierge subagent (execution/concierge_agent.py).
 
     The subagents run as tools of the concierge (agent as a tool), and the framework cannot pause
@@ -85,6 +85,9 @@ def create_ask_user_tool(topic: str) -> FunctionTool:
 
     Args:
         topic: What the subagent is responsible for, shown above its question (e.g. "hotels").
+        answers_log: Optional list that gets {"topic", "question", "answer"} for every question (answer None
+            when skipped). The chat gives it to the memory extraction, because these answers (hotel wishes,
+            citizenship, interests) are not in the concierge's replies.
     """
 
     @tool(name="ask_user")
@@ -109,6 +112,8 @@ def create_ask_user_tool(topic: str) -> FunctionTool:
                 answer = input("Your answer (Enter to skip): ").strip()
             except (EOFError, KeyboardInterrupt):
                 answer = ""
+            if answers_log is not None:
+                answers_log.append({"topic": topic, "question": question, "answer": answer or None})
 
         if not answer:
             return {"skipped": True}

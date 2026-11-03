@@ -4,6 +4,11 @@ az deployment operation group list --resource-group aiagent-travel9871v6-rg --na
 # Delete the entire deployment (So no more costs)
 az group delete --name aiagent-travel9871v6-rg --yes;
 
+# The sign-in app registration (scripts/00_sign_in_app_registration.sh) lives in Microsoft Entra ID, not in the
+# resource group, so deleting the group keeps it. It costs nothing; delete it when the project is gone for good.
+# A deleted app stays restorable for 30 days under "Deleted applications" in the Entra admin center.
+az ad app delete --id "$(az ad app list --display-name aiagent-travel9871v6-sign-in --query '[0].appId' -o tsv)"
+
 # View recently deleted Cognitive Services accounts in the region (to confirm deletion)
 #az cognitiveservices account list-deleted --output table
 

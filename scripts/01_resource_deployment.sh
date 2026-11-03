@@ -13,12 +13,14 @@ Get-Content .env | ForEach-Object {
   }
 }
 
-# Deploy the Bicep file (the third-party API keys from .env are stored in Key Vault)
+# Deploy the Bicep file (the third-party API keys from .env are stored in Key Vault).
+# signInClientId: the app registered by scripts/00_sign_in_app_registration.sh (run it first)
 az deployment group create `
 --resource-group aiagent-travel9871v6-rg `
 --template-file resource_deployment.bicep `
 --parameters projectPrefix="aiagent-travel9871v6" `
   userPrincipalId="$(az ad signed-in-user show --query id -o tsv)" `
+  signInClientId="$(az ad app list --display-name aiagent-travel9871v6-sign-in --query '[0].appId' -o tsv)" `
   visualCrossingApiKey="$env:VISUAL_CROSSING_API_KEY" `
   googleApiKey="$env:GOOGLE_API_KEY"
 

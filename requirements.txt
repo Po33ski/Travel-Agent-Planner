@@ -1,5 +1,6 @@
 pyyaml
 azure-identity
+msal
 azure-ai-projects>=2.0.0
 azure-core
 agent-framework>=1.13.0

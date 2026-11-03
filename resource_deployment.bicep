@@ -25,6 +25,13 @@ param speechName string = '${projectPrefix}-speech'
 param cosmosDbAccountName string = '${projectPrefix}-cosmos'
 param databaseName string = '${projectPrefix}-cosmosdb'
 param containerName string = '${projectPrefix}-container'
+// Long-term memory of the concierge chat: profile and trips of every user, and the chats saved for fine-tuning
+param memoryContainerName string = '${projectPrefix}-memory'
+param fineTuningContainerName string = '${projectPrefix}-finetuning'
+// Client ID of the app registration with which the concierge chat signs users in (Microsoft Entra ID).
+// scripts/00_sign_in_app_registration.sh registers the app; scripts/01_resource_deployment.sh passes its client ID.
+@minLength(1)
+param signInClientId string
 // Observability: Application Insights stores its data in the Log Analytics workspace
 param logAnalyticsName string = '${projectPrefix}-law'
 param appInsightsName string = '${projectPrefix}-appi'
@@ -54,6 +61,8 @@ var roles = {
   searchServiceContributor: '7ca78c08-252a-4471-8644-bb5ff32d4ba0'
   keyVaultSecretsUser: '4633458b-17de-408a-b874-0445c86b69e6'
 }
+// Cosmos DB data-plane role (its own RBAC system, not an Azure role): read and write items
+var cosmosDataContributorRoleId = '00000000-0000-0000-0000-000000000002'
 
 /*
   An AI Foundry resources is a variant of a CognitiveServices/account resource type that is specifically designed
@@ -379,6 +388,62 @@ resource cosmosContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/con
     }
   }
 }
+
+// Long-term memory of the concierge chat (UserMemoryStore): one "profile" item and one "trip" item per saved
+// trip for every user, all in the user's partition. Small items instead of one growing document per user.
+// Both containers share the database's 1,000 RU/s, so they cost nothing extra in the free tier.
+resource memoryContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2026-03-15' = {
+  parent: cosmosDatabase
+  name: memoryContainerName
+  properties: {
+    resource: {
+      id: memoryContainerName
+      partitionKey: {
+        paths: [
+          '/userId'  // the user's object ID (oid) from the sign-in
+        ]
+        kind: 'Hash'
+      }
+      // -1: TTL is on, but an item expires only when it has its own "ttl" (cosmos.memory_ttl_seconds in config.yaml)
+      defaultTtl: -1
+    }
+  }
+}
+
+// Chats saved for fine-tuning (one item per chat), kept apart from the memory: another purpose and another TTL
+resource fineTuningContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2026-03-15' = {
+  parent: cosmosDatabase
+  name: fineTuningContainerName
+  properties: {
+    resource: {
+      id: fineTuningContainerName
+      partitionKey: {
+        paths: [
+          '/userId'
+        ]
+        kind: 'Hash'
+      }
+      indexingPolicy: {
+        indexingMode: 'consistent'
+        includedPaths: [
+          {
+            path: '/*'
+          }
+        ]
+        excludedPaths: [
+          {
+            path: '/messages/*'  // never queried: indexing the chat text would only make every write dearer
+          }
+          {
+            path: '/"_etag"/?'
+          }
+        ]
+      }
+      // -1: TTL is on; every item has its own "ttl" (cosmos.fine_tuning_ttl_seconds in config.yaml)
+      defaultTtl: -1
+    }
+  }
+}
 /*
   Azure Key Vault for secure secret storage
   Stores: API keys, endpoints, connection strings, etc.
@@ -534,6 +599,19 @@ resource userToKeyVault 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
+// Read and write Cosmos DB items with Entra ID (the concierge chat). Cosmos DB has its own data-plane RBAC:
+// the assignment is a child of the account, not a Microsoft.Authorization role assignment.
+// The Magentic chat still uses the account key (COSMOSDB-PRIMARY-KEY), so local auth stays enabled.
+resource userToCosmosData 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2026-03-15' = {
+  parent: cosmosDbAccount
+  name: guid(cosmosDbAccount.id, userPrincipalId, cosmosDataContributorRoleId)
+  properties: {
+    principalId: userPrincipalId
+    roleDefinitionId: '${cosmosDbAccount.id}/sqlRoleDefinitions/${cosmosDataContributorRoleId}'
+    scope: cosmosDbAccount.id
+  }
+}
+
 // ------------------------------------------------------------------ Key Vault secrets
 // Secret name = environment variable name with '-' instead of '_' (secret names allow only letters, digits and '-').
 
@@ -555,10 +633,14 @@ var settingSecrets = {
   'AZURE-SUBSCRIPTION-ID': subscription().subscriptionId
   'AZURE-RESOURCE-GROUP': resourceGroup().name
   'AZURE-COGNITIVE-ACCOUNT-NAME': aiFoundry.name
-  // Long-term user memory (CosmosMemory)
+  // Long-term user memory (CosmosMemory: Magentic chat; UserMemoryStore: concierge chat)
   'COSMOSDB-ENDPOINT': 'https://${cosmosDbAccount.name}.documents.azure.com:443/'
   'COSMOSDB-DATABASE-NAME': cosmosDatabase.name
   'COSMOSDB-CONTAINER-NAME': cosmosContainer.name
+  'COSMOSDB-MEMORY-CONTAINER-NAME': memoryContainer.name
+  'COSMOSDB-FINETUNING-CONTAINER-NAME': fineTuningContainer.name
+  // Sign-in of the concierge chat (classes/user_sign_in_services.py); a client ID is not a secret
+  'ENTRA-APP-CLIENT-ID': signInClientId
   // NLP preprocessing (AzureNLPService)
   'LANGUAGE-ENDPOINT': 'https://${language.name}.cognitiveservices.azure.com/'
 }
