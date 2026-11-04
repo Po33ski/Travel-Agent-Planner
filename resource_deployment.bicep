@@ -1,0 +1,730 @@
+//https://github.com/microsoft-foundry/foundry-samples/blob/main/infrastructure/infrastructure-setup-bicep/00-basic/main.bicep
+
+param projectPrefix string
+param aiFoundryName string = projectPrefix
+param aiProjectName string = '${aiFoundryName}-proj'
+param llmModelDeploymentName string = '${projectPrefix}-llm-deploy'
+param llmTerraModelDeploymentName string = '${projectPrefix}-llm-terra-deploy'
+param llmMiniModelDeploymentName string = '${projectPrefix}-llm-mini-deploy'
+param embeddingModelDeploymentName string = '${projectPrefix}-embedding-deploy'
+param aiSearchName string = '${projectPrefix}-aisearch'
+param languageName string = '${projectPrefix}-language'
+// Storage account names: 3-24 lowercase letters and digits, globally unique
+param storageName string = take(toLower(replace('${projectPrefix}st', '-', '')), 24)
+param blobContainerName string = 'travel-guide'
+// Key Vault names: 3-24 letters, digits and hyphens, globally unique
+param keyVaultName string = '${take(projectPrefix, 21)}-kv'
+// Must match the knowledge base created by rag_setup.py
+param knowledgeBaseName string = 'travel-guide-kb'
+param knowledgeBaseConnectionName string = '${knowledgeBaseName}-mcp'
+// Object ID of the user who runs rag_setup.py: az ad signed-in-user show --query id -o tsv
+param userPrincipalId string
+param location string = resourceGroup().location
+param speechName string = '${projectPrefix}-speech'
+// Cosmos DB account names: 3-44 lowercase letters, digits and hyphens, globally unique
+param cosmosDbAccountName string = '${projectPrefix}-cosmos'
+param databaseName string = '${projectPrefix}-cosmosdb'
+param containerName string = '${projectPrefix}-container'
+// Long-term memory of the concierge chat: profile and trips of every user, and the chats saved for fine-tuning
+param memoryContainerName string = '${projectPrefix}-memory'
+param fineTuningContainerName string = '${projectPrefix}-finetuning'
+// Client ID of the app registration with which the concierge chat signs users in (Microsoft Entra ID).
+// scripts/00_sign_in_app_registration.sh registers the app; scripts/01_resource_deployment.sh passes its client ID.
+@minLength(1)
+param signInClientId string
+// Observability: Application Insights stores its data in the Log Analytics workspace
+param logAnalyticsName string = '${projectPrefix}-law'
+param appInsightsName string = '${projectPrefix}-appi'
+param appInsightsConnectionName string = '${appInsightsName}-connection'
+// Daily ingestion cap of the workspace in GB. A string, because Bicep has no decimal numbers.
+// 0.15 GB a day (about 4.5 GB a month) stays below the free 5 GB a month per billing account.
+param logAnalyticsDailyQuotaGb string = '0.15'
+// Third-party API keys: scripts/01_resource_deployment.sh passes them from .env
+// (VISUAL_CROSSING_API_KEY, GOOGLE_API_KEY).
+// Required: the deployment fails when a value is missing or empty.
+@secure()
+@minLength(1)
+param visualCrossingApiKey string
+@secure()
+@minLength(1)
+param googleApiKey string
+
+var knowledgeBaseApiVersion = '2026-08-01-preview'
+
+// Built-in role definition IDs
+var roles = {
+  storageBlobDataReader: '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1'
+  storageBlobDataContributor: 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
+  cognitiveServicesUser: 'a97b65f3-24c7-4388-baec-2e87135dc908'
+  searchIndexDataReader: '1407120a-92aa-4202-b7e9-c0e197c71c8f'
+  searchIndexDataContributor: '8ebe5a00-799e-43f5-93ac-243d3dce84a7'
+  searchServiceContributor: '7ca78c08-252a-4471-8644-bb5ff32d4ba0'
+  keyVaultSecretsUser: '4633458b-17de-408a-b874-0445c86b69e6'
+}
+// Cosmos DB data-plane role (its own RBAC system, not an Azure role): read and write items
+var cosmosDataContributorRoleId = '00000000-0000-0000-0000-000000000002'
+
+/*
+  An AI Foundry resources is a variant of a CognitiveServices/account resource type that is specifically designed
+   to host AI workloads and provide a seamless experience for deploying and managing AI models and assets.
+*/
+resource aiFoundry 'Microsoft.CognitiveServices/accounts@2026-05-01' = {
+  name: aiFoundryName
+  location: location
+  identity: {
+    type: 'SystemAssigned'
+  }
+  sku: {
+    name: 'S0'
+  }
+  kind: 'AIServices'
+  properties: {
+    // required to work in AI Foundry
+    allowProjectManagement: true
+
+    // Defines developer API endpoint subdomain
+    customSubDomainName: aiFoundryName
+
+    disableLocalAuth: false
+  }
+}
+
+/*
+  An AI Project is a logical container for assets such as models, deployments, etc. within the AI Foundry.
+  It is required to create an AI Project before deploying any models or other assets.
+*/
+resource aiProject 'Microsoft.CognitiveServices/accounts/projects@2026-05-01' = {
+  name: aiProjectName
+  parent: aiFoundry
+  location: location
+  identity: {
+    type: 'SystemAssigned'
+  }
+  properties: {}
+}
+
+/*
+  Deploying a model to the AI Foundry is done through a deployment resource.
+  In this example, we are deploying the 'gpt-5-mini' model,
+  which is a variant of GPT-5 optimized for lower latency and
+  cost while still providing strong performance for many use cases.
+*/
+resource llmModelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2026-05-01'= {
+  parent: aiFoundry
+  name: llmModelDeploymentName
+  dependsOn: [
+    aiProject
+  ]
+  sku : {
+    capacity: 1000 // Rate limit in thousands of tokens per minute (50 = 50K TPM).
+    name: 'GlobalStandard'
+  }
+  properties: {
+    model:{
+      name: 'gpt-5.6-luna'
+      format: 'OpenAI'
+      version: '2026-07-09'
+    }
+  }
+}
+
+resource llmTerraModelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2026-05-01'= {
+  parent: aiFoundry
+  name: llmTerraModelDeploymentName
+  dependsOn: [
+    llmModelDeployment  // Explicitly wait for LLM to finish first
+  ]
+  sku : {
+    capacity: 1000 // Rate limit in thousands of tokens per minute (50 = 50K TPM).
+    name: 'GlobalStandard'
+  }
+  properties: {
+    model:{
+      name: 'gpt-5.6-terra' // stronger and about 10x more expensive than gpt-5.6-luna; billed per token only when called
+      format: 'OpenAI'
+      version: '2026-07-09'
+    }
+  }
+}
+
+
+resource llmMiniModelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2026-05-01'= {
+  parent: aiFoundry
+  name: llmMiniModelDeploymentName
+  dependsOn: [
+    llmTerraModelDeployment // Explicitly wait for LLM to finish first
+  ]
+  sku : {
+    capacity: 1000 // Rate limit in thousands of tokens per minute (50 = 50K TPM).
+    name: 'GlobalStandard'
+  }
+  properties: {
+    model:{
+      name: 'gpt-5-mini'
+      format: 'OpenAI'
+      version: '2025-08-07'
+    }
+  }
+}
+
+
+// https://ai.azure.com/catalog/models/text-embedding-3-small
+resource embeddingModelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2026-05-01'= {
+  parent: aiFoundry
+  name: embeddingModelDeploymentName
+  dependsOn: [
+    llmMiniModelDeployment  // Explicitly wait for LLM to finish first
+  ]
+  sku : {
+    capacity: 1000 // 50K TPM, enough for the indexer to vectorise documents without constant throttling
+    name: 'GlobalStandard'
+  }
+  properties: {
+    model:{
+      name: 'text-embedding-3-small' // 1536 dimensions, good for semantic search and embedding use cases
+      format: 'OpenAI'
+      version: '1'
+    }
+  }
+}
+
+// ------------------------------------------------------------------ Azure AI Search
+resource searchService 'Microsoft.Search/searchServices@2025-05-01' = {
+  name: aiSearchName
+  location: location
+  sku: { name: 'free' } // no fixed cost; services connect with keys, so no managed identity is needed
+  properties: {
+    replicaCount: 1
+    partitionCount: 1
+    hostingMode: 'Default'
+    publicNetworkAccess: 'enabled'
+    semanticSearch: 'free' // semantic ranker is used by agentic retrieval; free plan returns errors instead of charges
+    authOptions: {
+      aadOrApiKey: {
+        aadAuthFailureMode: 'http401WithBearerChallenge' // Entra ID for the user, API keys for the services
+      }
+    }
+  }
+}
+
+// ------------------------------------------------------------------ Storage (blob knowledge source)
+resource storage 'Microsoft.Storage/storageAccounts@2026-04-01' = {
+  name: storageName
+  location: location
+  kind: 'StorageV2'
+  sku: { name: 'Standard_LRS' }
+  properties: {
+    accessTier: 'Hot'
+    minimumTlsVersion: 'TLS1_2'
+    allowBlobPublicAccess: false
+    allowSharedKeyAccess: true // Search indexer reads the container with the account key
+    supportsHttpsTrafficOnly: true
+  }
+}
+
+resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2026-04-01' = {
+  parent: storage
+  name: 'default'
+}
+
+resource container 'Microsoft.Storage/storageAccounts/blobServices/containers@2026-04-01' = {
+  parent: blobService
+  name: blobContainerName
+  properties: { publicAccess: 'None' }
+}
+
+// ------------------------------------------------------------------ project connection to the knowledge base (MCP)
+// Stores only the URL and key, so it can be created before the knowledge base exists.
+var knowledgeBaseMcpEndpoint = 'https://${searchService.name}.search.windows.net/knowledgebases/${knowledgeBaseName}/mcp?api-version=${knowledgeBaseApiVersion}'
+
+// Key-based MCP connection: the agent sends the Search query key (read-only) in the api-key header.
+// The key is read from the search service during deployment, so it never appears in code or outputs.
+// In the real production, the better approach is to use managed identidy auethentication
+resource kbConnection 'Microsoft.CognitiveServices/accounts/projects/connections@2025-10-01-preview' = {
+  parent: aiProject
+  name: knowledgeBaseConnectionName
+  properties: {
+    category: 'RemoteTool'
+    authType: 'CustomKeys'
+    target: knowledgeBaseMcpEndpoint
+    isSharedToAll: true
+    credentials: {
+      keys: {
+        'api-key': searchService.listQueryKeys().value[0].key
+      }
+    }
+    metadata: { type: 'generic_mcp' }
+  }
+}
+
+/*
+  Azure AI Speech service for speech-to-text, text-to-speech, and speech translation
+*/
+resource speech 'Microsoft.CognitiveServices/accounts@2026-05-01' = {
+  name: speechName
+  location: location
+  identity: {
+    type: 'SystemAssigned'
+  }
+  sku: {
+    name: 'F0'
+  }
+  kind: 'SpeechServices'
+  properties: {
+    customSubDomainName: speechName
+    disableLocalAuth: false
+  
+  }
+}
+
+/*
+  Azure AI Language service for Natural Language Processing (NLP)
+  Provides: Language detection, PII redaction, NER, key phrase extraction, sentiment analysis
+*/
+resource language 'Microsoft.CognitiveServices/accounts@2026-05-01' = {
+  name: languageName
+  location: location
+  identity: {
+    type: 'SystemAssigned'
+  }
+  sku: {
+    name: 'F0' // Free tier, change to 'S0' for production use
+  }
+  kind: 'TextAnalytics'  // Language service uses 'TextAnalytics' kind
+  properties: {
+    customSubDomainName: languageName
+    disableLocalAuth: false
+  }
+}
+
+/*
+  Azure Cosmos DB for long-term conversation history storage
+  Using Free Tier when available (25GB storage + 1000 RU/s free)
+*/
+resource cosmosDbAccount 'Microsoft.DocumentDB/databaseAccounts@2026-03-15' = {
+  name: toLower(cosmosDbAccountName)  // Cosmos DB names must be lowercase
+  location: location
+  properties: {
+    enableFreeTier: true               // FREE TIER ENABLED - 25GB + 1000 RU/s free
+    databaseAccountOfferType: 'Standard'
+    consistencyPolicy: {
+      defaultConsistencyLevel: 'Session'  // Perfect for conversation scenarios
+    }
+    locations: [
+      {
+        locationName: location
+        failoverPriority: 0
+      }
+    ]
+    enableAutomaticFailover: false      // Disabled for free tier optimization
+    publicNetworkAccess: 'Enabled'
+    disableLocalAuth: false
+    capabilities: []                    // No additional capabilities for free tier
+  }
+  identity: {
+    type: 'SystemAssigned'
+  }
+  tags: {
+    environment: 'development'
+    purpose: 'conversation-history-for-ai-agent'
+  }
+}
+
+// Database for storing conversation history
+resource cosmosDatabase 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases@2026-03-15' = {
+  parent: cosmosDbAccount
+  name: databaseName
+  properties: {
+    resource: {
+      id: databaseName
+    }
+    options: {
+      throughput: 1000  // This will be FREE under the free tier (first 1000 RU/s)
+    }
+  }
+}
+
+// Container for conversation threads with optimized partition key for chat history
+resource cosmosContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2026-03-15' = {
+  parent: cosmosDatabase
+  name: containerName
+  properties: {
+    resource: {
+      id: containerName
+      partitionKey: {
+        paths: [
+          '/userId'     // Partition by user ID for efficient querying of user history
+        ]
+        kind: 'Hash'
+      }
+      indexingPolicy: {
+        indexingMode: 'consistent'
+        includedPaths: [
+          {
+            path: '/*'  // Index all fields for flexible querying
+          }
+        ]
+        excludedPaths: [
+          {
+            path: '/"_etag"/?'  // Exclude etag from indexing
+          }
+        ]
+        // Add composite indexes for time-based queries
+        compositeIndexes: [
+          [
+            {
+              path: '/userId'
+              order: 'ascending'
+            }
+            {
+              path: '/last_updated'  // set by CosmosMemory on every save
+              order: 'descending'
+            }
+          ]
+        ]
+      }
+      // Optional: Add TTL for automatic cleanup of old conversations (90 days)
+      defaultTtl: 7776000  // 90 days in seconds (comment out if you want to keep forever)
+    }
+  }
+}
+
+// Long-term memory of the concierge chat (UserMemoryStore): one "profile" item and one "trip" item per saved
+// trip for every user, all in the user's partition. Small items instead of one growing document per user.
+// Both containers share the database's 1,000 RU/s, so they cost nothing extra in the free tier.
+resource memoryContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2026-03-15' = {
+  parent: cosmosDatabase
+  name: memoryContainerName
+  properties: {
+    resource: {
+      id: memoryContainerName
+      partitionKey: {
+        paths: [
+          '/userId'  // the user's object ID (oid) from the sign-in
+        ]
+        kind: 'Hash'
+      }
+      // -1: TTL is on, but an item expires only when it has its own "ttl" (cosmos.memory_ttl_seconds in config.yaml)
+      defaultTtl: -1
+    }
+  }
+}
+
+// Chats saved for fine-tuning (one item per chat), kept apart from the memory: another purpose and another TTL
+resource fineTuningContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2026-03-15' = {
+  parent: cosmosDatabase
+  name: fineTuningContainerName
+  properties: {
+    resource: {
+      id: fineTuningContainerName
+      partitionKey: {
+        paths: [
+          '/userId'
+        ]
+        kind: 'Hash'
+      }
+      indexingPolicy: {
+        indexingMode: 'consistent'
+        includedPaths: [
+          {
+            path: '/*'
+          }
+        ]
+        excludedPaths: [
+          {
+            path: '/messages/*'  // never queried: indexing the chat text would only make every write dearer
+          }
+          {
+            path: '/"_etag"/?'
+          }
+        ]
+      }
+      // -1: TTL is on; every item has its own "ttl" (cosmos.fine_tuning_ttl_seconds in config.yaml)
+      defaultTtl: -1
+    }
+  }
+}
+/*
+  Azure Key Vault for secure secret storage
+  Stores: API keys, endpoints, connection strings, etc.
+*/
+resource keyVault 'Microsoft.KeyVault/vaults@2026-02-01' = {
+  name: keyVaultName
+  location: location
+  properties: {
+    sku: {
+      family: 'A'
+      name: 'standard'
+    }
+    tenantId: subscription().tenantId
+    enableRbacAuthorization: true  // Use RBAC for access control
+    softDeleteRetentionInDays: 7
+    // Purge protection cannot be turned off again and blocks the vault name for the whole retention
+    // period after the resource group is deleted. Uncomment in production ('false' is not accepted).
+    // enablePurgeProtection: true
+  }
+}
+
+// ------------------------------------------------------------------ observability (tracing of the agents)
+// Billed per GB ingested (the first 5 GB a month per billing account are free); no fixed cost.
+// Analytics retention of 30 days is included in the ingestion price.
+resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2025-02-01' = {
+  name: logAnalyticsName
+  location: location
+  properties: {
+    sku: { name: 'PerGB2018' } // pay-as-you-go, the tier with the free 5 GB a month
+    retentionInDays: 30
+    workspaceCapping: {
+      // When the cap is reached, the workspace stops collecting data until the next day (UTC)
+      dailyQuotaGb: json(logAnalyticsDailyQuotaGb)
+    }
+  }
+}
+
+// Workspace-based Application Insights: no charge of its own, its data is billed in the workspace
+resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
+  name: appInsightsName
+  location: location
+  kind: 'web'
+  properties: {
+    Application_Type: 'web'
+    WorkspaceResourceId: logAnalytics.id
+    IngestionMode: 'LogAnalytics'
+  }
+}
+
+// Project connection to Application Insights. FoundryAgent.configure_azure_monitor() reads the connection
+// string from it, and the Foundry portal shows the traces of the project's agents (Tracing).
+// The SDK accepts only one Application Insights connection per project, with the connection string as its key.
+resource appInsightsConnection 'Microsoft.CognitiveServices/accounts/projects/connections@2025-10-01-preview' = {
+  parent: aiProject
+  name: appInsightsConnectionName
+  dependsOn: [
+    kbConnection // one connection write at a time on the project
+  ]
+  properties: {
+    category: 'AppInsights'
+    authType: 'ApiKey'
+    target: appInsights.id
+    isSharedToAll: true
+    credentials: {
+      key: appInsights.properties.ConnectionString
+    }
+    metadata: {
+      ApiType: 'Azure'
+      ResourceId: appInsights.id
+    }
+  }
+}
+
+// ------------------------------------------------------------------ role assignments: service → service
+// Search reads documents from the blob container
+// roles asigned to the search service's managed identity, allowing it to read blob data from the storage account. 
+// ONLY IN THE CASE OF USE MANAGED IDENTITY AUTHENTICATION. If you are using shared key or SAS token authentication, this role assignment is not necessary.
+// resource searchToStorage 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+//   scope: storage
+//   name: guid(storage.id, searchService.id, roles.storageBlobDataReader)
+//   properties: {
+//     principalId: searchService.identity.principalId
+//     principalType: 'ServicePrincipal'
+//     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.storageBlobDataReader)
+//   }
+// }
+
+// // Search calls the embedding and chat models (ingestion, query planning)
+// resource searchToFoundry 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+//   scope: aiFoundry
+//   name: guid(aiFoundry.id, searchService.id, roles.cognitiveServicesUser)
+//   properties: {
+//     principalId: searchService.identity.principalId
+//     principalType: 'ServicePrincipal'
+//     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.cognitiveServicesUser)
+//   }
+// }
+
+// // Agent (project managed identity) queries the knowledge base over MCP
+// resource projectToSearch 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+//   scope: searchService
+//   name: guid(searchService.id, aiProject.id, roles.searchIndexDataReader)
+//   properties: {
+//     principalId: aiProject.identity.principalId
+//     principalType: 'ServicePrincipal'
+//     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.searchIndexDataReader)
+//   }
+// }
+
+// ------------------------------------------------------------------ role assignments: user → service (rag_setup.py)
+// The user's own calls use Entra ID (DefaultAzureCredential); Owner has no data-plane rights, so these are needed.
+// Upload files to the container
+resource userToStorage 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: storage
+  name: guid(storage.id, userPrincipalId, roles.storageBlobDataContributor)
+  properties: {
+    principalId: userPrincipalId
+    principalType: 'User'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.storageBlobDataContributor)
+  }
+}
+
+// Create knowledge sources and knowledge bases
+resource userToSearchService 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: searchService
+  name: guid(searchService.id, userPrincipalId, roles.searchServiceContributor)
+  properties: {
+    principalId: userPrincipalId
+    principalType: 'User'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.searchServiceContributor)
+  }
+}
+
+// Read and write index content (knowledge source status, test queries)
+resource userToSearchData 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: searchService
+  name: guid(searchService.id, userPrincipalId, roles.searchIndexDataContributor)
+  properties: {
+    principalId: userPrincipalId
+    principalType: 'User'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.searchIndexDataContributor)
+  }
+}
+
+// Read the secrets from Key Vault
+resource userToKeyVault 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: keyVault
+  name: guid(keyVault.id, userPrincipalId, roles.keyVaultSecretsUser)
+  properties: {
+    principalId: userPrincipalId
+    principalType: 'User'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.keyVaultSecretsUser)
+  }
+}
+
+// Read and write Cosmos DB items with Entra ID (the concierge chat). Cosmos DB has its own data-plane RBAC:
+// the assignment is a child of the account, not a Microsoft.Authorization role assignment.
+// The Magentic chat still uses the account key (COSMOSDB-PRIMARY-KEY), so local auth stays enabled.
+resource userToCosmosData 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2026-03-15' = {
+  parent: cosmosDbAccount
+  name: guid(cosmosDbAccount.id, userPrincipalId, cosmosDataContributorRoleId)
+  properties: {
+    principalId: userPrincipalId
+    roleDefinitionId: '${cosmosDbAccount.id}/sqlRoleDefinitions/${cosmosDataContributorRoleId}'
+    scope: cosmosDbAccount.id
+  }
+}
+
+// ------------------------------------------------------------------ Key Vault secrets
+// Secret name = environment variable name with '-' instead of '_' (secret names allow only letters, digits and '-').
+
+// Settings: endpoints and resource names
+var settingSecrets = {
+  'PROJECT-ENDPOINT': 'https://${aiFoundry.name}.services.ai.azure.com/api/projects/${aiProject.name}'
+  'AOAI-ENDPOINT': 'https://${aiFoundry.name}.openai.azure.com'
+  'LLM-MODEL-DEPLOYMENT-NAME': llmModelDeployment.name
+  'LLM-TERRA-MODEL-DEPLOYMENT-NAME': llmTerraModelDeployment.name
+  'LLM-MINI-MODEL-DEPLOYMENT-NAME': llmMiniModelDeployment.name
+  'EMBEDDING-MODEL-DEPLOYMENT-NAME': embeddingModelDeployment.name
+  'SEARCH-ENDPOINT': 'https://${searchService.name}.search.windows.net'
+  'STORAGE-ACCOUNT-URL': 'https://${storage.name}.blob.${environment().suffixes.storage}/'
+  'BLOB-CONTAINER-NAME': container.name
+  'KNOWLEDGE-BASE-NAME': knowledgeBaseName
+  'KNOWLEDGE-BASE-CONNECTION-NAME': kbConnection.name
+  'SPEECH-REGION': location
+  // RAI policy deployment (management plane)
+  'AZURE-SUBSCRIPTION-ID': subscription().subscriptionId
+  'AZURE-RESOURCE-GROUP': resourceGroup().name
+  'AZURE-COGNITIVE-ACCOUNT-NAME': aiFoundry.name
+  // Long-term user memory (CosmosMemory: Magentic chat; UserMemoryStore: concierge chat)
+  'COSMOSDB-ENDPOINT': 'https://${cosmosDbAccount.name}.documents.azure.com:443/'
+  'COSMOSDB-DATABASE-NAME': cosmosDatabase.name
+  'COSMOSDB-CONTAINER-NAME': cosmosContainer.name
+  'COSMOSDB-MEMORY-CONTAINER-NAME': memoryContainer.name
+  'COSMOSDB-FINETUNING-CONTAINER-NAME': fineTuningContainer.name
+  // Sign-in of the concierge chat (classes/user_sign_in_services.py); a client ID is not a secret
+  'ENTRA-APP-CLIENT-ID': signInClientId
+  // NLP preprocessing (AzureNLPService)
+  'LANGUAGE-ENDPOINT': 'https://${language.name}.cognitiveservices.azure.com/'
+}
+
+resource settingSecret 'Microsoft.KeyVault/vaults/secrets@2026-02-01' = [for setting in items(settingSecrets): {
+  parent: keyVault
+  name: setting.key
+  properties: {
+    value: setting.value
+    contentType: 'text/plain'
+  }
+}]
+
+// Keys: read from the resources during deployment, so they never appear in code or outputs
+// The local client calls Speech
+resource speechKeySecret 'Microsoft.KeyVault/vaults/secrets@2026-02-01' = {
+  parent: keyVault
+  name: 'SPEECH-KEY'
+  properties: {
+    value: speech.listKeys().key1
+    contentType: 'text/plain'
+  }
+}
+
+// Search calls the embedding and chat models
+resource aoaiApiKeySecret 'Microsoft.KeyVault/vaults/secrets@2026-02-01' = {
+  parent: keyVault
+  name: 'AOAI-API-KEY'
+  properties: {
+    value: aiFoundry.listKeys().key1
+    contentType: 'text/plain'
+  }
+}
+
+// Search indexer reads the blob container
+resource storageConnectionStringSecret 'Microsoft.KeyVault/vaults/secrets@2026-02-01' = {
+  parent: keyVault
+  name: 'STORAGE-CONNECTION-STRING'
+  properties: {
+    value: 'DefaultEndpointsProtocol=https;AccountName=${storage.name};AccountKey=${storage.listKeys().keys[0].value};EndpointSuffix=${environment().suffixes.storage}'
+    contentType: 'text/plain'
+  }
+}
+
+
+// The local client calls the Language service (AzureNLPService)
+resource languageKeySecret 'Microsoft.KeyVault/vaults/secrets@2026-02-01' = {
+  parent: keyVault
+  name: 'LANGUAGE-KEY'
+  properties: {
+    value: language.listKeys().key1
+    contentType: 'text/plain'
+  }
+}
+
+// The local client reads and writes user profiles in Cosmos DB
+resource cosmosDbKeySecret 'Microsoft.KeyVault/vaults/secrets@2026-02-01' = {
+  parent: keyVault
+  name: 'COSMOSDB-PRIMARY-KEY'
+  properties: {
+    value: cosmosDbAccount.listKeys().primaryMasterKey
+    contentType: 'text/plain'
+  }
+}
+// Third-party API keys from .env
+resource visualCrossingApiKeySecret 'Microsoft.KeyVault/vaults/secrets@2026-02-01' = {
+  parent: keyVault
+  name: 'VISUAL-CROSSING-API-KEY'
+  properties: {
+    value: visualCrossingApiKey
+    contentType: 'text/plain'
+  }
+}
+
+resource googleApiKeySecret 'Microsoft.KeyVault/vaults/secrets@2026-02-01' = {
+  parent: keyVault
+  name: 'GOOGLE-API-KEY'
+  properties: {
+    value: googleApiKey
+    contentType: 'text/plain'
+  }
+}
+
+
+// ------------------------------------------------------------------ outputs (values for .env)
+// Everything else is read from Key Vault
+output KEY_VAULT_URL string = keyVault.properties.vaultUri

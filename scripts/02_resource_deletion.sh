@@ -1,0 +1,43 @@
+az deployment operation group list --resource-group aiagent-travel9871v6-rg --name resource_deployment --query "[?properties.provisioningState=='Failed'].{resource:properties.targetResource.resourceName, error:properties.statusMessage.error.code}" -o table
+
+
+# Delete the entire deployment (So no more costs)
+az group delete --name aiagent-travel9871v6-rg --yes;
+
+# The sign-in app registration (scripts/00_sign_in_app_registration.sh) lives in Microsoft Entra ID, not in the
+# resource group, so deleting the group keeps it. It costs nothing; delete it when the project is gone for good.
+# A deleted app stays restorable for 30 days under "Deleted applications" in the Entra admin center.
+az ad app delete --id "$(az ad app list --display-name aiagent-travel9871v6-sign-in --query '[0].appId' -o tsv)"
+
+# View recently deleted Cognitive Services accounts in the region (to confirm deletion)
+#az cognitiveservices account list-deleted --output table
+
+# The following commands permanently delete the soft-deleted accounts.
+# --location is the region the resources were deployed to (see scripts/01_resource_deployment.sh)
+az cognitiveservices account purge `
+    --location switzerlandnorth `
+    --resource-group aiagent-travel9871v6-rg `
+    --name aiagent-travel9871v6;
+
+# The free (F0) Speech account also stays soft-deleted for 48 hours and, until purged,
+# still counts towards the limit of one free Speech account per subscription.
+az cognitiveservices account purge `
+    --location switzerlandnorth `
+    --resource-group aiagent-travel9871v6-rg `
+    --name aiagent-travel9871v6-speech
+
+# The same applies to the free (F0) Language account
+az cognitiveservices account purge `
+    --location switzerlandnorth `
+    --resource-group aiagent-travel9871v6-rg `
+    --name aiagent-travel9871v6-language;
+
+# Find all soft-deleted Key Vaults in the region (to confirm deletion)
+az keyvault list-deleted
+
+# Find when the key vault will be permanently deleted (scheduled purge date)
+az keyvault list-deleted --resource-type vault --query "[?name=='aiagent-travel9871v6-kv'].properties.scheduledPurgeDate"
+
+# Permanently delete the soft-deleted Key Vault, so its name can be used again
+# (not possible when purge protection is enabled)
+az keyvault purge --name aiagent-travel9871v6-kv --location switzerlandnorth
