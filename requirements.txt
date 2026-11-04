@@ -1,0 +1,16 @@
+pyyaml
+azure-identity
+msal
+azure-ai-projects>=2.0.0
+azure-core
+agent-framework>=1.13.0
+agent-framework-foundry
+azure-monitor-opentelemetry
+requests
+azure-storage-blob
+azure-search-documents>=12.1.0b2
+azure-mgmt-cognitiveservices
+azure-cognitiveservices-speech
+azure-keyvault-secrets==4.11.0
+azure-cosmos==4.16.1
+azure-ai-textanalytics==5.4.0

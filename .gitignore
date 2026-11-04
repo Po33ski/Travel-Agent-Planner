@@ -1,0 +1,10 @@
+# Environment Variables
+.env
+launch.json
+responses.json
+tutorials/
+__pycache__/
+*.pyc
+inputs/
+outputs/
+CHANGELOG.md
