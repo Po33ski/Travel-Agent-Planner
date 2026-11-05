@@ -16,10 +16,10 @@ from azure.keyvault.secrets import SecretClient
 import yaml
 from classes.weather_services import get_forecast_weather
 from classes.google_services import search_hotels_google_maps
-from classes.human_review_services import skip_concierge_questions
 from classes.secret_manager_services import SecretManager
 from classes.evaluate_services import ConciergeCallRecorder, EvaluateService
 from classes.scope_guard_services import ScopeGuard
+from classes.user_simulator_services import UserSimulator
 from utils.agent_middleware import (
     BlockedReplyMonitor,
     add_todays_date_to_task,
@@ -77,6 +77,16 @@ evaluate_service = EvaluateService(
     max_answer_words=evaluation_config["max_answer_words"]["concierge"],
     scope_guard=scope_guard,
 )
+# Plays the traveller in the test cases with a "user" field and answers the subagents' questions there;
+# in the scripted cases its ask_user tools skip every question
+user_simulator = UserSimulator(
+    FoundryChatClient(
+        project_endpoint=endpoint,
+        model=secret_manager.get_secret(config["user_simulator"]["model_secret"]),
+        credential=credential,
+    ),
+    config,
+)
 
 
 # Detects answers that the model refused or the content filter cut off
@@ -88,9 +98,10 @@ call_recorder = ConciergeCallRecorder()
 def create_agents(usage_middleware) -> FoundryAgent:
     """Wrap the pre-deployed Foundry agents: the concierge with its four subagents as tools (agent as a tool).
 
-    The same wiring as execution/concierge_agent.py, except: the subagents get skip_concierge_questions
-    instead of the console ask_user (nobody answers here), usage_middleware and call_recorder are added,
-    and the concierge has no TravelHistoryProvider (the evaluation has no user profile).
+    The same wiring as execution/concierge_agent.py, except: the subagents get the simulated user's
+    ask_user instead of the console one (it answers in the simulated test cases and skips the questions in
+    the scripted ones), usage_middleware and call_recorder are added, and the concierge has no
+    UserMemoryProvider (the evaluation has no user profile).
     """
     # 1. Subagents. agent_name must match agent_name in agents/concierge/*_subagent_config.yaml and the
     # tool names declared in agents/concierge/concierge_agent_deployment.py.
@@ -110,7 +121,7 @@ def create_agents(usage_middleware) -> FoundryAgent:
         agent_name="ragDataSubagent",
         description="Travel guide knowledge base: attractions, restaurants, events, transportation and practical tips.",
         credential=credential,
-        tools=[skip_concierge_questions],
+        tools=[user_simulator.create_ask_user_tool("travel guide")],
         middleware=subagent_middleware,
     )
     web_data_subagent = FoundryAgent(
@@ -118,7 +129,7 @@ def create_agents(usage_middleware) -> FoundryAgent:
         agent_name="webDataSubagent",
         description="Web search: country information, entry rules such as visas, and current travel information.",
         credential=credential,
-        tools=[skip_concierge_questions],
+        tools=[user_simulator.create_ask_user_tool("web search")],
         middleware=subagent_middleware,
     )
     weather_subagent = FoundryAgent(
@@ -126,7 +137,7 @@ def create_agents(usage_middleware) -> FoundryAgent:
         agent_name="weatherSubagent",
         description="Daily weather forecast for a location and an optional date range (next 15 days).",
         credential=credential,
-        tools=[get_forecast_weather, skip_concierge_questions],
+        tools=[get_forecast_weather, user_simulator.create_ask_user_tool("weather")],
         middleware=subagent_middleware,
     )
     hotel_subagent = FoundryAgent(
@@ -134,7 +145,7 @@ def create_agents(usage_middleware) -> FoundryAgent:
         agent_name="hotelSubagent",
         description="Hotel search on Google Maps: picks the hotels that best match the user's wishes.",
         credential=credential,
-        tools=[search_hotels_google_maps, skip_concierge_questions],
+        tools=[search_hotels_google_maps, user_simulator.create_ask_user_tool("hotel")],
         middleware=subagent_middleware,
     )
     subagents = [rag_data_subagent, web_data_subagent, weather_subagent, hotel_subagent]
@@ -164,6 +175,19 @@ def print_subagent_calls(record) -> None:
         print(f"[EVAL] Subagent {agent_name}: {activity['calls']} call(s), tools: {activity['tool_calls'] or 'none'}")
 
 
+def print_user_simulation(record) -> None:
+    """Print how a simulated conversation ended and what the simulated user cost (not counted for the concierge)."""
+    simulation = record.get("user_simulation")
+    if simulation is None:
+        return
+    tokens = simulation["token_usage"]
+    print(
+        f"[EVAL] Simulated user: {simulation['end']} after {simulation['user_messages']} message(s) "
+        f"(limit {simulation['max_turns']}), {simulation['questions_answered']} question(s) answered, "
+        f"{tokens['total_token_count']} tokens in {tokens['calls']} calls, {simulation['duration_seconds']} s"
+    )
+
+
 # Microsoft Agent Framework is built entirely on async programming.
 # agent.run() is an async method, so you need to run it in an async context.
 async def run_evaluation(concierge_agent, test_cases, case_records):
@@ -180,12 +204,13 @@ async def run_evaluation(concierge_agent, test_cases, case_records):
 
             # Every test case is a new conversation (session) with the concierge
             record = await evaluate_service.evaluate_concierge_test_case(
-                concierge_agent, call_recorder, test_case, WORKFLOW_NAME
+                concierge_agent, call_recorder, test_case, WORKFLOW_NAME, user_simulator=user_simulator
             )
             record["repetition"] = repetition
             case_records.append(record)
             evaluate_service.print_case_result(record)
             print_subagent_calls(record)
+            print_user_simulation(record)
 
 
 def main() -> int:
@@ -210,6 +235,16 @@ def main() -> int:
     # The report is saved even after an interruption: every finished run has already cost tokens
     report = evaluate_service.create_report(WORKFLOW_NAME, case_records)
     evaluate_service.print_summary(report["summary"])
+    # The simulated conversations, with the simulated user's tokens (not part of the concierge's tokens)
+    simulation_summary = evaluate_service.summarize_concierge_simulation(case_records)
+    if simulation_summary is not None:
+        report["summary"]["user_simulation"] = simulation_summary
+        print(
+            f"Simulated conversations: {simulation_summary['conversations']}, goal reached: "
+            f"{simulation_summary['goal_reached']}, ends: {simulation_summary['ends']}, average user messages: "
+            f"{simulation_summary['average_user_messages']}, simulated user's tokens: "
+            f"{simulation_summary['tokens'].get('total_token_count', 0)}"
+        )
     report_path = evaluate_service.save_report(report)
     print(f"\n✨ Evaluation report saved to: {report_path}")
     return 0

@@ -387,17 +387,17 @@ async def run_session(concierge_agent: FoundryAgent, user_id: str, memory_provid
 
 
 def main() -> int:
-    # The user signs in with a Microsoft account before the agents start. The account's object ID (oid) is the
-    # key of the user's memory; nobody can reach another user's memory by typing a name.
+    # The user signs in (or signs up) in the external tenant before the agents start. The account's object ID (oid)
+    # is the key of the user's memory; nobody can reach another user's memory by typing a name.
     user = sign_in_user(secret_manager.get_secret("ENTRA-APP-CLIENT-ID"), config["sign_in"])
     if user is None:
         print("\nExiting.")
         return 1
-    print(f"[SIGN-IN] Signed in as {user.username or user.name} (user id: {user.user_id})")
+    name = user.name or user.username or "traveller"
+    print(f"[SIGN-IN] Signed in as {user.username or name} (user id: {user.user_id})")
 
     try:
         _, is_new = memory_store.sign_in(user, user_role)
-        name = user.name or user.username
         if is_new:
             print(f"[LONG-TERM] Welcome, {name}! A new profile was created for you.")
         else:

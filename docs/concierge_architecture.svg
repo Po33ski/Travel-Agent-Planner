@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1460" height="1270" viewBox="0 0 1460 1270" role="img" aria-labelledby="title desc">
   <title id="title">Travel Agent Planner concierge architecture</title>
-  <desc id="desc">Five prompt agents in Azure AI Foundry Agent Service, all guarded by the same RAI policy as the team: conciergeAgent on gpt-5.6-luna and four subagents on gpt-5-mini for the knowledge base, web search, weather and hotels. The concierge leads a conversation over many turns in one session and has the four subagents as function tools (agent as a tool). When it calls one, the local client runs that subagent as a new conversation that sees only the task and today's date, and sends the subagent's reply back as the tool result. Each subagent has its data tool and a local ask_user tool, with which it asks the user a question about its own topic in the console. The weather and hotel tools run locally against the Visual Crossing and Google Maps Places APIs; the knowledge base and web search run inside Foundry. Before the concierge runs, a scope guard on gpt-5-mini checks every message together with the end of the previous reply. The chat signs the user in with a Microsoft account through Microsoft Entra ID (the account's object ID is the key of the user's memory), gives the concierge the user's long-term memory from Azure Cosmos DB (preferences and saved trips), saves the whole conversation for fine-tuning at the end and lets gpt-5-mini propose what to remember, which is saved only when the user accepts, sends its traces to Application Insights and reads every setting and key from Azure Key Vault. An evaluation script runs test conversations through the same agents, skips the subagents' questions and scores the final answer and every subagent call with Foundry evaluators.</desc>
+  <desc id="desc">Five prompt agents in Azure AI Foundry Agent Service, all guarded by the same RAI policy as the team: conciergeAgent on gpt-5.6-luna and four subagents on gpt-5-mini for the knowledge base, web search, weather and hotels. The concierge leads a conversation over many turns in one session and has the four subagents as function tools (agent as a tool). When it calls one, the local client runs that subagent as a new conversation that sees only the task and today's date, and sends the subagent's reply back as the tool result. Each subagent has its data tool and a local ask_user tool, with which it asks the user a question about its own topic in the console. The weather and hotel tools run locally against the Visual Crossing and Google Maps Places APIs; the knowledge base and web search run inside Foundry. Before the concierge runs, a scope guard on gpt-5-mini checks every message together with the end of the previous reply. The chat signs the user in through Microsoft Entra External ID, a separate customer tenant where users sign up with any e-mail address (the account's object ID is the key of the user's memory), gives the concierge the user's long-term memory from Azure Cosmos DB (preferences and saved trips), saves the whole conversation for fine-tuning at the end and lets gpt-5-mini propose what to remember, which is saved only when the user accepts, sends its traces to Application Insights and reads every setting and key from Azure Key Vault. An evaluation script runs test conversations through the same agents, skips the subagents' questions and scores the final answer and every subagent call with Foundry evaluators.</desc>
 
   <style>
     text { font-family: "Segoe UI", -apple-system, "Helvetica Neue", Arial, sans-serif; fill: #1F2328; }
@@ -87,7 +87,7 @@
   <text x="62" y="604" class="t" style="font-size:11.5px">User, memory and settings</text>
   <text x="62" y="624" class="s">start: sign-in → oid is the user's memory key</text>
   <text x="62" y="642" class="s d">exit: chat saved · gpt-5-mini proposes memory</text>
-  <text x="62" y="660" class="s d">sign_in_user: MSAL in the browser → Entra ID</text>
+  <text x="62" y="660" class="s d">sign_in_user: MSAL, browser → External ID</text>
   <text x="62" y="678" class="s d">UserMemoryStore: profile · trips · fine-tuning</text>
   <text x="62" y="696" class="s d">enable_tracing → Application Insights</text>
   <text x="62" y="714" class="s d">SecretManager: endpoints &amp; keys (Key Vault)</text>
@@ -132,10 +132,10 @@
   <text x="74" y="1069" class="t mono">concierge_agent_and_eval.py</text>
   <text x="46" y="1090" class="s">the chat's 5 agents · one session per test case</text>
   <text x="46" y="1107" class="xs mono">inputs/concierge_evaluation_prompts.yaml</text>
-  <text x="46" y="1126" class="s">skip_concierge_questions instead of ask_user</text>
+  <text x="46" y="1126" class="s">simulated user answers ask_user</text>
   <text x="46" y="1143" class="s">ConciergeCallRecorder: every subagent call</text>
   <text x="46" y="1160" class="s">Foundry evaluations · LLM judge: gpt-5.6-luna</text>
-  <text x="46" y="1177" class="s">final answer (whole chat) · each subagent call</text>
+  <text x="46" y="1177" class="s">every reply + whole chat · each subagent call</text>
   <text x="46" y="1194" class="s">routing: expected_agents · rules · tokens</text>
   <text x="46" y="1218" class="s d">→ outputs/evaluation_conciergeWorkflow_*.json</text>
 
@@ -232,11 +232,11 @@
   <text x="904" y="812" class="t mono c" style="font-size:12px">travel-guide-kb</text>
   <text x="904" y="832" class="xs c">knowledge base · extractive data</text>
 
-  <!-- Microsoft Entra ID: sign-in of the chat's user -->
+  <!-- Microsoft Entra External ID: customer tenant for the chat's users -->
   <rect x="466" y="880" width="250" height="124" rx="10" class="svc"/>
-  <text x="482" y="902" class="group" style="fill:#0060AA">Microsoft Entra ID <tspan class="s" style="font-weight:400">· sign-in · free</tspan></text>
-  <text x="482" y="928" class="s d">app &lt;prefix&gt;-sign-in · not in the RG</text>
-  <text x="482" y="948" class="xs">personal + work or school accounts</text>
+  <text x="482" y="902" class="group" style="fill:#0060AA">Entra External ID <tspan class="s" style="font-weight:400">· sign-in · free</tspan></text>
+  <text x="482" y="928" class="s d">travelplannercustomers · not in the RG</text>
+  <text x="482" y="948" class="xs">sign-up: any e-mail + password (user flow)</text>
   <text x="482" y="964" class="xs">ID token → oid (user key) · tid · name</text>
   <text x="482" y="988" class="mono" style="font-size:9px;fill:#57606A">ENTRA-APP-CLIENT-ID</text>
 

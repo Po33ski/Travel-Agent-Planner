@@ -1,3 +1,4 @@
+import asyncio
 import json
 import time
 from datetime import datetime
@@ -9,6 +10,7 @@ from agent_framework import (
     AgentExecutorResponse,
     AgentMiddleware,
     AgentResponse,
+    ConversationSplit,
     EvalItem,
     FunctionTool,
     Message,
@@ -146,6 +148,8 @@ class EvaluateService:
         self.concierge_test_cases_path = settings.get("concierge_test_cases_path")
         self.output_dir = settings["output_dir"]
         self.final_answer_evaluators = settings["final_answer_evaluators"]
+        # The concierge's conversation: {"per_turn": [...], "whole_conversation": [...]}
+        self.concierge_answer_evaluators = settings.get("concierge_answer_evaluators") or {}
         self.agent_evaluators = settings["agent_evaluators"]
         self.agent_evaluation_enabled = settings["evaluate_agents"]
         self.timeout_seconds = settings["timeout_seconds"]
@@ -472,30 +476,59 @@ class EvaluateService:
 
     # ------------------------------------------------------------------ concierge (concierge_agent_and_eval.py)
     def load_concierge_test_cases(self):
-        """Read the concierge's test conversations (see inputs/concierge_evaluation_prompts.yaml for the format)."""
+        """Read the concierge's test conversations (see inputs/concierge_evaluation_prompts.yaml for the format).
+
+        A case is scripted (query and optional follow_ups) or simulated (query and user, played by the
+        UserSimulator). A case with both, or a user without a goal, raises ValueError.
+        """
         if not self.concierge_test_cases_path:
             raise ValueError("evaluation.concierge_test_cases_path is not set in config.yaml")
         with open(self.concierge_test_cases_path, "r", encoding="utf-8") as file:
-            return yaml.safe_load(file)["test_cases"]
+            test_cases = yaml.safe_load(file)["test_cases"]
 
-    async def evaluate_concierge_test_case(self, concierge_agent, call_recorder, test_case, workflow_name):
+        for test_case in test_cases:
+            user = test_case.get("user")
+            if user is None:
+                continue
+            if test_case.get("follow_ups"):
+                raise ValueError(f"Test case '{test_case['id']}': give either follow_ups or user, not both")
+            if not isinstance(user, dict) or not user.get("goal"):
+                raise ValueError(f"Test case '{test_case['id']}': user needs a goal")
+        return test_cases
+
+    async def evaluate_concierge_test_case(
+        self, concierge_agent, call_recorder, test_case, workflow_name, user_simulator=None
+    ):
         """Run one test conversation with the concierge and evaluate it.
 
-        A test case is the first user message (query) plus optional follow_ups, sent one after another
-        in one session, as in the chat. Every message is checked by the scope guard first, with the
-        concierge's previous reply as context; a refused message ends the conversation, because the
-        concierge never sees it.
+        A test case is scripted or simulated, and either way one session, as in the chat:
+        - scripted: the first user message (query) plus optional follow_ups, sent one after another;
+          the subagents' questions (ask_user) are skipped;
+        - simulated (a "user" field with goal and facts): after the first message, user_simulator plays the
+          traveller. After every reply it writes the next message or ends the conversation (goal reached,
+          the assistant cannot help, or max_turns user messages), and it answers the subagents' questions.
+        Every message is checked by the scope guard first, with the concierge's previous reply as context;
+        a refused message ends the conversation, because the concierge never sees it.
 
-        The record has the format of evaluate_test_case, plus "turns" (every message with its reply and
-        scope check) and "subagent_calls". The final answer is the last reply. The rule checks cover it
-        and the subagents called in the whole conversation, the LLM judge sees the whole conversation,
-        and every subagent call is scored with the subagent's evaluators from agent_evaluators.
-        call_recorder is the ConciergeCallRecorder on the subagents. Errors are recorded instead of raised.
+        The record has the format of evaluate_test_case, plus "turns" (every message with its scope check,
+        the subagents' questions and the reply), "subagent_calls" and, for a simulated case,
+        "user_simulation". The final answer is the last reply. The rule checks cover every reply and the
+        subagents called in the whole conversation (check_concierge_conversation), the LLM judge scores the
+        conversation (evaluate_concierge_conversation), and every subagent call is scored with the
+        subagent's evaluators from agent_evaluators. call_recorder is the ConciergeCallRecorder on the
+        subagents; user_simulator is the UserSimulator whose ask_user tools the subagents have (needed for
+        a simulated case). Errors are recorded instead of raised.
         """
         record = {"id": test_case["id"], "query": test_case["query"]}
         follow_ups = test_case.get("follow_ups") or []
         if follow_ups:
             record["follow_ups"] = follow_ups
+        user = test_case.get("user")
+        # How a simulated conversation ended; None for a scripted case
+        simulation = None
+        if user is not None:
+            max_turns = test_case.get("max_turns") or (user_simulator.max_turns if user_simulator else 0)
+            simulation = {"goal": user["goal"], "max_turns": max_turns, "end": None, "reason": None}
         self.usage_middleware.reset()
         call_recorder.reset()
 
@@ -506,12 +539,18 @@ class EvaluateService:
         # The user's messages (with the date line, as the concierge got them) and its replies, for the judge
         conversation = []
         refused = False
+        # The subagents' ask_user tools log their questions in the current turn and, in a simulated case,
+        # the simulator answers them
+        simulated = user_simulator.start(user, turns) if user_simulator is not None else None
         started = time.perf_counter()
         try:
-            for user_message in [test_case["query"], *follow_ups]:
+            if user is not None and user_simulator is None:
+                raise ValueError("a simulated test case (user) needs a UserSimulator")
+            user_message = test_case["query"]
+            while user_message is not None:
                 if turns:
                     # The earlier replies of a multi-turn case are not printed anywhere else
-                    self._print_concierge_turn(turns[-1], user_message)
+                    self._print_concierge_turn(turns[-1], user_message, simulated=simulation is not None)
                 previous_reply = turns[-1]["reply"] if turns else None
                 turn = {"user": user_message}
                 turns.append(turn)
@@ -531,32 +570,47 @@ class EvaluateService:
                 response = await concierge_agent.run(task, session=session)
                 turn["reply"] = response.text
                 conversation += [Message("user", [task]), Message("assistant", [response.text])]
+                user_message = await self._next_concierge_message(test_case, turns, user_simulator, simulation)
         except Exception as error:
             record["turns"] = turns
             record["error"] = f"{type(error).__name__}: {error}"
             # Tokens used before the failure still count
             record["token_usage"] = self._add_concierge_scope_usage(self.count_workflow_tokens(), scopes)
+            if simulation is not None and simulated is not None:
+                simulation["end"], simulation["reason"] = "error", record["error"]
+                record["user_simulation"] = self._concierge_simulation_record(simulation, simulated, len(turns))
             return record
+        finally:
+            if user_simulator is not None:
+                user_simulator.finish()
 
         record["turns"] = turns
         record["final_answer"] = turns[-1]["reply"]
-        # The scope checks are inside the measured time: in the chat the user waits for them too
-        record["duration_seconds"] = round(time.perf_counter() - started, 1)
+        # The scope checks are inside the measured time: in the chat the user waits for them too. The
+        # simulated user's time is not: in the chat the assistant waits for the user then.
+        user_seconds = simulated.seconds if simulated is not None else 0.0
+        record["duration_seconds"] = round(time.perf_counter() - started - user_seconds, 1)
         record["token_usage"] = self._add_concierge_scope_usage(self.count_workflow_tokens(), scopes)
         record["subagent_calls"] = self._concierge_subagent_calls(call_recorder)
         if scopes:
             # The check that decided: the refusal, or the check of the first message
             record["scope_guard"] = (scopes[-1] if refused else scopes[0]).as_dict()
+        if simulation is not None:
+            if refused:
+                simulation["end"], simulation["reason"] = "refused", "The scope guard refused a message."
+            record["user_simulation"] = self._concierge_simulation_record(simulation, simulated, len(turns))
 
         called_agents = list(record["token_usage"]["per_agent"])
-        record["rule_checks"] = self.check_final_answer(record["final_answer"], test_case, called_agents)
+        record["rule_checks"] = self.check_concierge_conversation(
+            turns, test_case, called_agents, record.get("user_simulation")
+        )
 
         # The evaluation name is shown in the Foundry portal
         eval_name = f"{workflow_name} - {test_case['id']}"
         # A refusal is not judged: the judge does not know the assistant's scope (see _refused_record)
         if not refused and test_case.get("judge_final_answer", True):
             record["final_answer_evaluation"] = await self._run_evaluation(
-                self.evaluate_concierge_final_answer(conversation, f"{eval_name} - final answer")
+                self.evaluate_concierge_conversation(conversation, f"{eval_name} - conversation")
             )
         else:
             record["final_answer_evaluation"] = self._skipped_evaluation()
@@ -568,15 +622,105 @@ class EvaluateService:
 
         return record
 
-    async def evaluate_concierge_final_answer(self, conversation, eval_name):
-        """Score the concierge's last reply with the final-answer evaluators, in the context of the conversation.
+    async def _next_concierge_message(self, test_case, turns, user_simulator, simulation):
+        """Return the next user message of a test conversation, None when it ends.
 
-        The item holds the user's messages and the concierge's replies, text only, as for the other set-ups.
-        The judge gets everything up to the last user message as the query and the last reply as the
-        response (the agent evaluators receive both as message lists). With one message this is the same
-        input as evaluate_agent_final_answer; evaluate_agent cannot take earlier turns, so the item is built here.
+        Scripted case: the next follow-up. Simulated case: the simulated user's next message. It ends when
+        the simulator reports the goal reached or gives up, when max_turns user messages have been sent,
+        or when the simulator fails; simulation["end"] and simulation["reason"] say why.
         """
-        return await self._evaluate_items([EvalItem(conversation=conversation)], self.final_answer_evaluators, eval_name)
+        if simulation is None:
+            follow_ups = test_case.get("follow_ups") or []
+            # turns holds the first message and the follow-ups sent so far
+            sent = len(turns) - 1
+            return follow_ups[sent] if sent < len(follow_ups) else None
+
+        try:
+            step = await user_simulator.next_step()
+        except Exception as error:
+            simulation["end"], simulation["reason"] = "error", f"{type(error).__name__}: {error}"
+            print(f"[SIMULATED USER] Failed, the conversation ends: {simulation['reason']}")
+            return None
+
+        simulation["reason"] = step.reason
+        message = step.message.strip()
+        if step.status != "continue" or not message:
+            simulation["end"] = "gave_up" if step.status == "continue" else step.status
+            print(f"[SIMULATED USER] {simulation['end'].replace('_', ' ').capitalize()}: {step.reason}")
+            return None
+        if len(turns) >= simulation["max_turns"]:
+            # The goal is not reached, and the user may send no further message
+            simulation["end"] = "max_turns"
+            print(f"[SIMULATED USER] Limit of {simulation['max_turns']} messages reached: {step.reason}")
+            return None
+        print(f"[SIMULATED USER] Goes on: {step.reason}")
+        return message
+
+    def check_concierge_conversation(self, turns, test_case, called_agents, simulation=None):
+        """Run the rule checks on a concierge conversation; no model calls.
+
+        The checks of check_final_answer, with these differences:
+        - answer_length: every reply must keep the word limit, not only the last one;
+        - expected_keywords and expected_answer: the last reply of a scripted case, all replies of a
+          simulated one (its goal is often met over several replies);
+        - goal_reached, for a simulated case only (simulation = record["user_simulation"]): the simulated
+          user reported its goal reached within max_turns. The verdict comes from the simulator's model; it
+          is read here, without another model call.
+        """
+        replies = [turn["reply"] for turn in turns]
+        text = "\n\n".join(replies) if simulation is not None else replies[-1]
+        checks = self.check_final_answer(text, test_case, called_agents)
+
+        word_counts = [len(reply.split()) for reply in replies]
+        counts = f"{word_counts[0]} words" if len(word_counts) == 1 else f"words per reply: {word_counts}"
+        length_check = self._rule_check(
+            "answer_length",
+            all(0 < count <= self.max_answer_words for count in word_counts),
+            f"{counts} (limit: {self.max_answer_words})",
+        )
+        checks = [length_check if check["name"] == "answer_length" else check for check in checks]
+
+        if simulation is not None:
+            reached = simulation["end"] == "goal_reached"
+            if reached:
+                details = f"after {simulation['user_messages']} user messages (limit: {simulation['max_turns']})"
+            else:
+                details = f"not reached ({simulation['end']}): {simulation['reason']}"
+            checks.append(self._rule_check("goal_reached", reached, details))
+        return checks
+
+    async def evaluate_concierge_conversation(self, conversation, eval_name):
+        """Score the concierge's conversation with the evaluators of concierge_answer_evaluators (LLM judge).
+
+        conversation: the user's messages (with the date line, as the concierge got them) and its replies,
+        text only, as for the other set-ups. Agent Framework splits it into what the judge sees as the
+        query and as the response:
+        - per_turn: every reply, with the earlier turns as the query (EvalItem.per_turn_items: one item per reply);
+        - whole_conversation: the first message as the query and the rest of the conversation as the
+          response (ConversationSplit.FULL): did the conversation serve the request?
+        With one message both are the same item, so it is scored once with all evaluators: the same input as
+        evaluate_agent_final_answer. Otherwise the two Foundry evaluation runs run at the same time, and the
+        result merges them (_merge_concierge_evaluations), so the report and the summary keep their format.
+        """
+        per_turn = self.concierge_answer_evaluators.get("per_turn") or []
+        whole = self.concierge_answer_evaluators.get("whole_conversation") or []
+        if not per_turn and not whole:
+            raise ValueError("evaluation.concierge_answer_evaluators is not set in config.yaml")
+
+        turn_items = EvalItem.per_turn_items(conversation)
+        if len(turn_items) <= 1:
+            evaluators = list(dict.fromkeys([*per_turn, *whole]))
+            result = await self._run_evaluation(self._evaluate_items(turn_items, evaluators, eval_name))
+            return self._merge_concierge_evaluations([("whole conversation", result)])
+
+        runs = []
+        if per_turn:
+            runs.append(("reply", self._evaluate_items(turn_items, per_turn, f"{eval_name} per reply")))
+        if whole:
+            whole_item = EvalItem(conversation=conversation, split_strategy=ConversationSplit.FULL)
+            runs.append(("whole conversation", self._evaluate_items([whole_item], whole, f"{eval_name} as a whole")))
+        results = await asyncio.gather(*(self._run_evaluation(evaluation) for _, evaluation in runs))
+        return self._merge_concierge_evaluations([(label, result) for (label, _), result in zip(runs, results)])
 
     async def evaluate_concierge_subagents(self, call_recorder, eval_name):
         """Score every subagent call of a concierge conversation with the subagent's evaluators.
@@ -584,7 +728,7 @@ class EvaluateService:
         Counterpart of evaluate_agents for the Magentic workflow, with the same result format: one item
         per call, holding the task the concierge wrote (with the date line), the subagent's reply with its
         function tool calls and, as context, what its tools returned. The concierge itself is not scored
-        here: its routing is checked by the rule checks and its answer by the final-answer judge.
+        here: its routing is checked by the rule checks and its replies by evaluate_concierge_conversation.
         """
         items_by_agent = {}
         for agent, task_messages, response in call_recorder.calls:
@@ -613,15 +757,87 @@ class EvaluateService:
                 entry["tool_calls"][tool_name] = entry["tool_calls"].get(tool_name, 0) + count
         return activity
 
+    def _concierge_simulation_record(self, simulation, simulated, user_messages):
+        """Return record["user_simulation"]: how the simulated conversation went, and the simulator's own cost.
+
+        The simulator's tokens and time are kept apart from token_usage and duration_seconds, which measure
+        the assistant: the simulated user is part of the test.
+        """
+        return {
+            "goal": simulation["goal"],
+            "max_turns": simulation["max_turns"],
+            "user_messages": user_messages,
+            # goal_reached, gave_up, max_turns, refused or error
+            "end": simulation["end"],
+            "reason": simulation["reason"],
+            "questions_answered": simulated.questions_answered,
+            "duration_seconds": round(simulated.seconds, 1),
+            "token_usage": self._usage_to_dict(simulated.usage or {}, simulated.calls),
+        }
+
+    def summarize_concierge_simulation(self, case_records):
+        """Aggregate the simulated conversations of a report; None when there were none.
+
+        concierge_agent_and_eval.py adds it to the summary as "user_simulation".
+        """
+        simulations = [record["user_simulation"] for record in case_records if "user_simulation" in record]
+        if not simulations:
+            return None
+        ends = {}
+        for simulation in simulations:
+            ends[simulation["end"]] = ends.get(simulation["end"], 0) + 1
+        return {
+            "conversations": len(simulations),
+            "goal_reached": ends.get("goal_reached", 0),
+            "ends": ends,
+            "average_user_messages": round(sum(s["user_messages"] for s in simulations) / len(simulations), 1),
+            "questions_answered": sum(s["questions_answered"] for s in simulations),
+            "tokens": self._sum_counts(s["token_usage"] for s in simulations),
+        }
+
     @staticmethod
-    def _print_concierge_turn(turn, next_message):
+    def _merge_concierge_evaluations(parts):
+        """Merge the evaluation runs of one concierge conversation into the result format.
+
+        parts: (label, result) per run; every item gets the label ("reply" or "whole conversation"), because
+        the judge's item order is not guaranteed and the metric names alone do not say which split was scored.
+        The status is "partial" when a run failed and another completed.
+        """
+        results = [result for _, result in parts]
+        statuses = {result["status"] for result in results}
+        if statuses == {"completed"}:
+            status = "completed"
+        elif "completed" in statuses:
+            status = "partial"
+        else:
+            status = results[0]["status"] if len(statuses) == 1 else "error"
+        errors = [result["error"] for result in results if result.get("error")]
+        report_urls = [result["report_url"] for result in results if result.get("report_url")]
+        return {
+            "status": status,
+            "passed": sum(result.get("passed") or 0 for result in results),
+            "failed": sum(result.get("failed") or 0 for result in results),
+            "error": "; ".join(errors) or None,
+            "report_url": report_urls[0] if report_urls else None,
+            "report_urls": report_urls,
+            "items": [{"label": label, **item} for label, result in parts for item in result["items"]],
+            "agents": {},
+        }
+
+    @staticmethod
+    def _rule_check(name, passed, details):
+        """One rule check in the format of check_final_answer."""
+        return {"name": name, "score": 1.0 if passed else 0.0, "passed": passed, "details": details}
+
+    @staticmethod
+    def _print_concierge_turn(turn, next_message, simulated=False):
         """Print a reply of a multi-turn test case and the next user message."""
         print("\n" + "=" * 50)
         print("CONCIERGE (earlier turn):")
         print("=" * 50)
         print(turn["reply"])
         print("=" * 50)
-        print(f"\nYou: {next_message}")
+        print(f"\n{'Simulated user' if simulated else 'You'}: {next_message}")
 
     # ------------------------------------------------------------------ scope guard
     async def _check_scope(self, record, test_case):
@@ -970,19 +1186,23 @@ class EvaluateService:
         """Print one evaluation: the score of every evaluator, and the judge's reason for a failed one.
 
         An agent called several times has one item per call, so its evaluators are listed once per call.
+        A concierge conversation has labelled items ("reply", "whole conversation") and can be "partial".
         """
-        if evaluation["status"] != "completed":
+        if evaluation["status"] not in ("completed", "partial"):
             error = f": {evaluation['error']}" if evaluation.get("error") else ""
             print(f"[EVAL] {title}: {evaluation['status']}{error}")
             return
 
         print(f"[EVAL] {title}:")
+        if evaluation["status"] == "partial":
+            print(f"[EVAL]   ⚠️ partly failed: {evaluation['error']}")
         for item in evaluation["items"]:
             if item["error"]:
                 print(f"[EVAL]   ⚠️ item error: {item['error']}")
+            label = f" ({item['label']})" if item.get("label") else ""
             for score in item["scores"]:
                 mark = {True: "✅", False: "❌"}.get(score["passed"], "➖")
-                line = f"[EVAL]   {mark} {score['name']}: {score['score']}"
+                line = f"[EVAL]   {mark} {score['name']}{label}: {score['score']}"
                 reason = cls._judge_reason(score["details"]) if score["passed"] is False else ""
                 print(f"{line} - {reason[:JUDGE_REASON_CHARS]}" if reason else line)
 

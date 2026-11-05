@@ -37,7 +37,7 @@ The third approach is a conversation, not a single task. `conciergeAgent` (`gpt-
 
 Unlike the team's specialists, each subagent may ask the user a short question itself, but only about its own topic (interests, citizenship for visa rules, travel dates, hotel wishes and the hotel choice), through its `ask_user` tool. The concierge asks only what it needs to choose the next step, and ends every reply with proposals of what to do next. It has its own chat, `execution/concierge_agent.py`, and its own evaluation, `evaluation/concierge_agent_and_eval.py`. See [Concierge variant](#concierge-variant-concierge_agentpy) for the details.
 
-The concierge chat signs the user in with a **Microsoft account** (Microsoft Entra ID; the account's object ID is the user's key) and keeps a **long-term memory per account** in Azure Cosmos DB: lasting preferences (interests, hotel wishes, budget, citizenship, ...) and the saved trips, with the places recommended then apart from the places the user has visited. At the end of a chat `gpt-5-mini` proposes what to remember, and only what the user accepts is saved; the chats themselves are saved apart, for fine-tuning. `/memory` shows the memory and `/forget` deletes it. See [Concierge: sign-in and long-term memory](#concierge-sign-in-and-long-term-memory).
+The concierge chat signs the user in with **Microsoft Entra External ID** (users create their own account with any e-mail address in a separate customer tenant; the account's object ID is the user's key) and keeps a **long-term memory per account** in Azure Cosmos DB: lasting preferences (interests, hotel wishes, budget, citizenship, ...) and the saved trips, with the places recommended then apart from the places the user has visited. At the end of a chat `gpt-5-mini` proposes what to remember, and only what the user accepts is saved; the chats themselves are saved apart, for fine-tuning. `/memory` shows the memory and `/forget` deletes it. See [Concierge: sign-in and long-term memory](#concierge-sign-in-and-long-term-memory).
 
 ![Travel Agent Planner concierge architecture](docs/concierge_architecture.svg)
 
@@ -60,12 +60,13 @@ The concierge chat signs the user in with a **Microsoft account** (Microsoft Ent
 | Path | Purpose |
 |---|---|
 | `resource_deployment.bicep` | Azure infrastructure: Foundry resource and project, model deployments, AI Search, Storage, Speech, Language, Cosmos DB, Key Vault with all settings and keys, knowledge base connection and role assignments |
+| `azure_app_config.md` | Hand-over for the web application: what is configured in Azure and Entra External ID, the decisions taken for the web app and what is still to do |
 | `rag/rag_setup.py` | Uploads the travel guide and builds the Foundry IQ knowledge source and knowledge base |
 | `agents/magentic/<agent>_deployment.py` | One script per agent of the Magentic team. Creates or updates the RAI policy and the server-side agent (system prompt and tools) |
 | `agents/magentic/<agent>_config.yaml` | One file per agent of the Magentic team: agent name and system prompt |
 | `agents/concierge/` | Deployment scripts and config files (agent name and system prompt) of the concierge variant: `conciergeAgent` and its four subagents |
 | `execution/agent_execution.py` | Interactive command-line chat. Asks for the user name and e-mail address, builds the Magentic workflow, asks the user to approve the manager's plan, runs the weather, hotel search and hotel review tools locally, saves the conversation and preferences to Cosmos DB, converts the final answer to speech and offers to save a trip summary and keywords |
-| `execution/concierge_agent.py` | Interactive command-line chat with the concierge, the default chat. Signs the user in with a Microsoft account, keeps one conversation for the whole chat, runs the subagents as tools of the concierge together with their local tools (weather, hotel search, `ask_user`), runs the `/memory` and `/forget` commands, and at the end saves the chat for fine-tuning and offers to save the preferences and trips it found |
+| `execution/concierge_agent.py` | Interactive command-line chat with the concierge, the default chat. Signs the user in through Microsoft Entra External ID, keeps one conversation for the whole chat, runs the subagents as tools of the concierge together with their local tools (weather, hotel search, `ask_user`), runs the `/memory` and `/forget` commands, and at the end saves the chat for fine-tuning and offers to save the preferences and trips it found |
 | `evaluation/magentic_exe_and_eval.py` | Runs the test prompts through the Magentic workflow, evaluates every run and saves the report in `outputs/` |
 | `evaluation/single_agent_exe_and_eval.py` | The same evaluation for the single agent `travelAgent` |
 | `evaluation/concierge_agent_and_eval.py` | The same evaluation for the concierge and its subagents, with test conversations from `inputs/concierge_evaluation_prompts.yaml` |
@@ -75,7 +76,7 @@ The concierge chat signs the user in with a **Microsoft account** (Microsoft Ent
 | `classes/secret_manager_services.py` | `SecretManager`: reads secrets from Key Vault and caches them in memory |
 | `classes/cosmos_memory_services.py` | `CosmosMemory` (Magentic chat): user profiles, preferences, travel history and conversation history in one Cosmos DB document per user |
 | `classes/travel_history_provider.py` | `TravelHistoryProvider` (Magentic chat): Agent Framework context provider that gives the manager the user's saved travel history |
-| `classes/user_sign_in_services.py` | `sign_in_user` (concierge chat): sign-in with a Microsoft account through MSAL in the browser; returns the account's object ID (`oid`), tenant and name |
+| `classes/user_sign_in_services.py` | `sign_in_user` (concierge chat): sign-in (or sign-up) in the Microsoft Entra External ID tenant through MSAL in the browser; returns the account's object ID (`oid`), tenant and name |
 | `classes/user_memory_services.py` | `UserMemoryStore` (concierge chat): profile and trip items in the memory container and the chats in the fine-tuning container of Cosmos DB, the note for the concierge and the `/memory` view. `UserMemoryProvider`: context provider that gives the concierge the note once per chat |
 | `classes/memory_extraction_services.py` | `MemoryExtractor` (concierge chat): `gpt-5-mini` with structured output proposes the profile updates and trips of a finished chat (`MemoryProposal`) |
 | `classes/azure_nlp_services.py` | `AzureNLPService`: language detection, summarization, key phrases and other Azure AI Language features |
@@ -83,7 +84,8 @@ The concierge chat signs the user in with a **Microsoft account** (Microsoft Ent
 | `classes/weather_services.py` | `WeatherService` and the `get_forecast_weather` / `get_current_weather` tools |
 | `classes/google_services.py` | `GooglePlacesService` (Google Maps Places API) and the `search_hotels_google_maps` tool |
 | `classes/scope_guard_services.py` | `ScopeGuard`: classifies every user message with `gpt-5-mini` before the team, the single agent or the concierge runs, and refuses messages that are not travel requests (see [Scope guard](#scope-guard)) |
-| `classes/human_review_services.py` | Human in the loop for the chats: `review_plan` (plan review in the console), the `ask_user_about_hotels` tool and its evaluation stand-in `approve_hotels_automatically`, and `create_ask_user_tool` (the `ask_user` tool of the concierge's subagents) and its evaluation stand-in `skip_concierge_questions` |
+| `classes/human_review_services.py` | Human in the loop for the chats: `review_plan` (plan review in the console), the `ask_user_about_hotels` tool and its evaluation stand-in `approve_hotels_automatically`, and `create_ask_user_tool` (the `ask_user` tool of the concierge's subagents in the chat) |
+| `classes/user_simulator_services.py` | `UserSimulator` (concierge evaluation): `gpt-5-mini` with structured output plays the traveller of a simulated test conversation and answers the subagents' questions; its `create_ask_user_tool` replaces the console `ask_user` in the evaluation (see [Concierge evaluator and simulator](#concierge-evaluator-and-simulator)) |
 | `classes/speech_services.py` | `AzureSpeechService` and the `text_to_speech` helper |
 | `classes/rai_policies_services.py` | `RaiPolicyManager`: builds and deploys the RAI policy from `config.yaml` |
 | `utils/utils.py` | `add_todays_date`, which puts today's date in front of every task, the console login of the Magentic chat (`ask_user_name`, `ask_user_email`) and helpers for normalising weather API responses |
@@ -92,7 +94,7 @@ The concierge chat signs the user in with a **Microsoft account** (Microsoft Ent
 | `utils/observability.py` | `enable_tracing`: sends the OpenTelemetry traces of the chat or an evaluation run to Application Insights (see [Tracing](#tracing)) |
 | `inputs/` | Source documents for the knowledge base: `travel_guide/` (the guide split into one file per city, uploaded by `rag_setup.py`) and the full guide it was split from (`world_city_travel_guide.md`, `.pdf`) and the test prompts for the evaluation (`evaluation_prompts.yaml`, and `concierge_evaluation_prompts.yaml` for the concierge) |
 | `outputs/` | Audio file with the spoken final answer and the evaluation reports (`evaluation_<workflow>_<timestamp>.json`) |
-| `scripts/` | Step-by-step CLI commands: registration of the sign-in app (`00_sign_in_app_registration.sh`), deployment (`01_resource_deployment.sh`) and deletion (`02_resource_deletion.sh`) |
+| `scripts/` | Step-by-step CLI commands: environment set-up (`00_environment_setup.sh`), deployment (`01_resource_deployment.sh`) and deletion (`02_resource_deletion.sh`) |
 | `docs/` | The three architecture diagrams shown at the top of this README: the Magentic team (`architecture.svg`), the single agent (`single_agent_architecture.svg`) and the concierge (`concierge_architecture.svg`) |
 
 ---
@@ -142,7 +144,7 @@ The deployment passes them to the template as `@secure()` parameters, and the te
 
 Choose a unique prefix. Resource names, including the globally unique storage account, Key Vault and Cosmos DB names, are derived from it. All resources are created in the resource group's region (see [Region](#region)).
 
-First register the app with which the concierge chat signs users in (once; see [Concierge: sign-in and long-term memory](#concierge-sign-in-and-long-term-memory)). An app registration is free and lives in Microsoft Entra ID, not in the resource group. Set `$appName` in `scripts/00_sign_in_app_registration.sh` to `<prefix>-sign-in` and run the script; running it again changes nothing. The deployment below looks the app up by this name and stores its client ID in Key Vault.
+First set up the sign-in of the concierge chat in Microsoft Entra External ID (once, in the Entra admin center; free up to 50,000 monthly active users), see [Set up Microsoft Entra External ID](#set-up-microsoft-entra-external-id). It gives you the client ID of the app registration, which the deployment below stores in Key Vault (`signInClientId`).
 
 ```powershell
 az group create --name <resource-group> --location switzerlandnorth
@@ -159,7 +161,7 @@ az deployment group create `
   --template-file resource_deployment.bicep `
   --parameters projectPrefix="<prefix>" `
     userPrincipalId="$(az ad signed-in-user show --query id -o tsv)" `
-    signInClientId="$(az ad app list --display-name <prefix>-sign-in --query '[0].appId' -o tsv)" `
+    signInClientId="<client ID of the app registration in the external tenant>" `
     visualCrossingApiKey="$env:VISUAL_CROSSING_API_KEY" `
     googleApiKey="$env:GOOGLE_API_KEY"
 
@@ -174,6 +176,7 @@ Good to know:
 
 - **Preview before deploying.** Add `--confirm-with-what-if` to `az deployment group create` to see what will be created or changed and confirm with `y/n`. Secrets that hold keys always show as *Modify*, because what-if cannot evaluate `listKeys()` or secure parameters. Their values don't actually change.
 - **Running the deployment again is safe.** The default mode is incremental: resources that already exist with the same settings are left unchanged, and only missing ones are created. Properties changed by hand in the portal are reset to the values in the template.
+- **`RequestConflict` ("provisioning state is not terminal")** means a resource was still being updated by an earlier attempt. Wait until it is `Succeeded` (`az cognitiveservices account show ... --query properties.provisioningState`) and run the deployment again.
 - **`InsufficientResourcesAvailable`** means the region has no capacity left for a new service of that type (most often the free Azure AI Search tier). Choose another region (see [Region](#region)).
 
 ### 5. Configure the local settings
@@ -286,7 +289,7 @@ The chat stops twice to ask you (see [Human in the loop](#human-in-the-loop)):
 python execution/concierge_agent.py
 ```
 
-The chat opens the browser: sign in with a Microsoft account (personal, or work or school). The first time, the consent page asks whether the app may read your basic profile. A new account gets a new, empty memory; a returning one gets its saved preferences and trips. Type `/memory` to see what is saved about you and `/forget <number>`, `/forget profile` or `/forget all` to delete it. Then talk to the concierge as in a conversation: it remembers the earlier messages, so you can start with "Lisbon next week?" and add details later. Each reply ends with proposals of what to do next; answer them, or ask for something else. While the concierge works, a subagent may stop with `QUESTION FROM THE <TOPIC> SPECIALIST:` (for example the hotel specialist asking what matters for your hotel, and later whether its choice is OK). Type your answer, or press Enter to skip it. The console shows the concierge's tasks as `[CONCIERGE] -> <subagent>: <task>` lines and the subagents' replies as `[AGENT]` lines. When you type `exit` or `quit`, the chat saves the conversation for fine-tuning, shows the preferences and trips it found and asks whether to save them. See [Concierge variant](#concierge-variant-concierge_agentpy).
+The chat opens the browser on the sign-in page of the External ID tenant: sign in, or create an account with any e-mail address and a password (*Sign up*). A new account gets a new, empty memory; a returning one gets its saved preferences and trips. Type `/memory` to see what is saved about you and `/forget <number>`, `/forget profile` or `/forget all` to delete it. Then talk to the concierge as in a conversation: it remembers the earlier messages, so you can start with "Lisbon next week?" and add details later. Each reply ends with proposals of what to do next; answer them, or ask for something else. While the concierge works, a subagent may stop with `QUESTION FROM THE <TOPIC> SPECIALIST:` (for example the hotel specialist asking what matters for your hotel, and later whether its choice is OK). Type your answer, or press Enter to skip it. The console shows the concierge's tasks as `[CONCIERGE] -> <subagent>: <task>` lines and the subagents' replies as `[AGENT]` lines. When you type `exit` or `quit`, the chat saves the conversation for fine-tuning, shows the preferences and trips it found and asks whether to save them. See [Concierge variant](#concierge-variant-concierge_agentpy).
 
 ### 9. Evaluate the agents
 
@@ -324,7 +327,7 @@ To use another region, change `--location` in `az group create`. Existing resour
 |---|---|---|
 | `projectPrefix` | *(required)* | Base name for all resources |
 | `userPrincipalId` | *(required)* | Object ID of the user who runs the scripts (`az ad signed-in-user show --query id -o tsv`) |
-| `signInClientId` | *(required)* | Client ID of the sign-in app registered by `scripts/00_sign_in_app_registration.sh`, stored in Key Vault as `ENTRA-APP-CLIENT-ID` |
+| `signInClientId` | *(required)* | Client ID of the app registration of the concierge chat in the External ID tenant (`travel-planner-console`), stored in Key Vault as `ENTRA-APP-CLIENT-ID` |
 | `visualCrossingApiKey` | *(required, secure)* | Visual Crossing API key, stored in Key Vault |
 | `googleApiKey` | *(required, secure)* | Google Maps Platform API key, stored in Key Vault |
 | `aiFoundryName` | `projectPrefix` | Foundry (AIServices) account name and custom subdomain |
@@ -409,7 +412,7 @@ The project uses a hybrid approach:
   - `Search Index Data Contributor` on the search service (read index content and status)
   - `Cosmos DB Built-in Data Contributor` on the Cosmos DB account (read and write items; the concierge chat). This is a Cosmos DB data-plane role, assigned as a child of the account, not an Azure role.
 - **User → Azure (keys from Key Vault).** The local client calls Speech, Language and, in the Magentic chat, Cosmos DB with keys that it reads from Key Vault. The weather and hotel tools read the Visual Crossing and Google Maps keys the same way.
-- **End user → the concierge chat (Microsoft Entra ID sign-in).** Separate from the above: the person who chats signs in with a Microsoft account (MSAL, app registration `<prefix>-sign-in`), and the account's object ID only selects whose memory the chat uses. The chat still reaches Azure with the developer's `az login`. See [Concierge: sign-in and long-term memory](#concierge-sign-in-and-long-term-memory).
+- **End user → the concierge chat (Microsoft Entra External ID sign-in).** Separate from the above: the person who chats signs in (or signs up) in a separate customer tenant (MSAL, app registration `travel-planner-console`), and the account's object ID only selects whose memory the chat uses. The chat still reaches Azure with the developer's `az login`. See [Concierge: sign-in and long-term memory](#concierge-sign-in-and-long-term-memory).
 - **Service → service (keys).** AI Search reads Storage with the account connection string and calls the models with the Foundry API key. The knowledge base agent queries the knowledge base with the Search query key stored in the project connection.
 
 Even though most services are called with keys, Key Vault itself is always opened with Entra ID, so no secret is stored on disk except the two third-party keys in `.env`, which are only needed for the deployment.
@@ -647,7 +650,7 @@ How it runs:
 - **Subagents ask the user through `ask_user`.** In Python, a tool approval inside a child agent cannot be resumed interactively through the parent's agent-as-tool call (Microsoft Learn, *Agents as Tools*, "Child tool approvals"): a pause inside a subagent would end the concierge's turn and lose the subagent's state. So each subagent has a local function tool, `ask_user(question)` (`create_ask_user_tool()` in `classes/human_review_services.py`), which prints `QUESTION FROM THE <TOPIC> SPECIALIST:` and reads the answer with `input()` while the subagent waits (a sync tool runs in a worker thread). It returns `{"answer": "..."}`, or `{"skipped": true}` when the user presses Enter. A lock shows the questions of subagents that run at the same time one after another. The prompts limit the questions: only about the subagent's topic, only when the answer changes the result, at most once per task (the hotel subagent: once for the wishes and once for the review of its choice, per city), and never to offer more help.
 - **Today's date.** The chat puts the date line in front of every user message, as the Magentic chat does. A subagent does not see that message, so the `add_todays_date_to_task` middleware puts the date line in front of its task: the subagent needs it for relative dates in the user's answers and for the 15-day forecast range.
 - **Scope guard with context.** A short answer such as "yes" or "three days" cannot be classified on its own, so the chat passes the end of the concierge's previous reply (at most 1,500 characters) between `<previous_reply>` tags; the classifier's instructions say to use it only to understand a short answer. A refused message never reaches the concierge and stays out of its conversation. Answers typed at `ask_user` are not checked by the guard.
-- **Sign-in and memory.** The user signs in with a Microsoft account, and the account's object ID selects the user's long-term memory in Cosmos DB. `UserMemoryProvider` gives the concierge the note with the user's preferences and saved trips with the first message only; the note then stays in the stored conversation instead of being repeated in every turn. `/memory` and `/forget` show and delete the memory. See [Concierge: sign-in and long-term memory](#concierge-sign-in-and-long-term-memory).
+- **Sign-in and memory.** The user signs in (or signs up) in the Microsoft Entra External ID tenant, and the account's object ID selects the user's long-term memory in Cosmos DB. `UserMemoryProvider` gives the concierge the note with the user's preferences and saved trips with the first message only; the note then stays in the stored conversation instead of being repeated in every turn. `/memory` and `/forget` show and delete the memory. See [Concierge: sign-in and long-term memory](#concierge-sign-in-and-long-term-memory).
 - **Saved at the end.** When the user quits, the chat saves the whole conversation as one multi-turn fine-tuning example in the fine-tuning container (its own short system prompt, then the user's messages and the concierge's replies in turn), and `gpt-5-mini` proposes the preferences and trips to remember, which are saved only when the user accepts. Replies that were refused or blocked are left out. The concierge chat does not read the replies out.
 - **Evaluation.** `evaluation/concierge_agent_and_eval.py` (see [Concierge evaluation](#concierge-evaluation-concierge_agent_and_evalpy)).
 - **Middleware.** The concierge has `BlockedReplyMonitor` and `log_delegations`, which prints `[CONCIERGE] -> <subagent>: <task>`. Each subagent has `add_todays_date_to_task`, `BlockedReplyMonitor`, `log_agent_replies` and `log_tool_calls`. `as_tool()` always runs the subagent in streaming mode, where the response exists only after the stream has been read, so `log_agent_replies` and `BlockedReplyMonitor` check the final response of a streaming run through a result hook of the stream. `drop_foreign_tool_contents` is not needed: a subagent never receives another agent's tool calls.
@@ -769,7 +772,7 @@ Three things are defined in more than one place:
 
 - **Function tool schemas.** `agents/magentic/weather_agent_deployment.py` and `agents/magentic/hotel_agent_deployment.py` hold the `FunctionTool` JSON schemas for the server-side agents (`agents/single_agent/travel_agent_deployment.py` holds both for the single agent), and `weather_services.py` / `google_services.py` / `human_review_services.py` hold the `@tool` Python implementations for the client. `ask_user_about_hotels` has two implementations with the same name and parameters: the console one for the chat and `approve_hotels_automatically` for the evaluation. In the concierge variant, the four `agents/concierge/*_subagent_deployment.py` scripts declare `ask_user(question)` (client: `create_ask_user_tool()`), the weather and hotel subagents also declare their data tool, and `concierge_agent_deployment.py` declares the four subagents as tools: name = the subagent's `agent_name`, one argument `task`, as `as_tool()` creates them. Keep the tool and parameter names in sync.
 - **Agent names.** The `agent_name` in each `agents/magentic/<agent>_config.yaml` must match the name used in `agent_execution.py` and `magentic_exe_and_eval.py`, the *Team* section of the manager's system prompt, `expected_agents` / `unexpected_agents` in `inputs/evaluation_prompts.yaml` and the keys of `evaluation.agent_evaluators` in `config.yaml`. An agent whose name is missing from `agent_evaluators` is silently not evaluated. In the concierge variant, the `agent_name` in each `agents/concierge/<agent>_config.yaml` must match the name in `concierge_agent.py` and `concierge_agent_and_eval.py`, the tool names in `concierge_agent_deployment.py`, the *Specialists* section of the concierge's prompt, `expected_agents` / `unexpected_agents` in `inputs/concierge_evaluation_prompts.yaml` and the keys of `evaluation.agent_evaluators`.
-- **The concierge's memory.** The memory fields are defined by `ProfileUpdates` and `TripMemory` in `classes/memory_extraction_services.py`, `PROFILE_LIST_FIELDS` / `PROFILE_TEXT_FIELDS` and the labels in `classes/user_memory_services.py`, the extraction instructions (`concierge_memory.instructions` in `config.yaml`) and the *Travel history* section of the concierge's prompt, which describes the note's first line `Travel history of this user:` and its labels (`Profile:`, `past trip`, `upcoming or ongoing trip`, `dates unknown`, `Recommended then`, `Visited (said by the user)`, `Open then`). The display name of the sign-in app (`<prefix>-sign-in`) is in all three `scripts/*.sh`.
+- **The concierge's memory.** The memory fields are defined by `ProfileUpdates` and `TripMemory` in `classes/memory_extraction_services.py`, `PROFILE_LIST_FIELDS` / `PROFILE_TEXT_FIELDS` and the labels in `classes/user_memory_services.py`, the extraction instructions (`concierge_memory.instructions` in `config.yaml`) and the *Travel history* section of the concierge's prompt, which describes the note's first line `Travel history of this user:` and its labels (`Profile:`, `past trip`, `upcoming or ongoing trip`, `dates unknown`, `Recommended then`, `Visited (said by the user)`, `Open then`). The external tenant's domain is in `sign_in.authority` in `config.yaml`, the client ID of its app registration in `scripts/01_resource_deployment.sh` (parameter `signInClientId`).
 
 ---
 
@@ -863,15 +866,27 @@ The manager's system prompt (section *Travel history*) says that this message co
 
 The concierge chat (`execution/concierge_agent.py`) has its own sign-in, its own containers and its own provider. The Magentic chat above is unchanged.
 
-**Sign-in with Microsoft Entra ID (`classes/user_sign_in_services.py`).** At start-up the chat opens the browser and the user signs in with a Microsoft account: a personal account (outlook.com, hotmail.com, live.com, or a Microsoft account created with any other e-mail address) or a work or school account of any organization. MSAL (`PublicClientApplication.acquire_token_interactive`) receives the ID token on `http://localhost` and checks it, and the chat takes three things from it:
+**Sign-in with Microsoft Entra External ID (`classes/user_sign_in_services.py`).** The users of the chat are customers, not members of the Azure tenant, so they live in a separate **external tenant** (Microsoft Entra External ID, the Microsoft service for customer sign-in). At start-up the chat opens the browser on the tenant's sign-in page (`<subdomain>.ciamlogin.com`). A returning user signs in; a new one creates an account there with any e-mail address and a password, through the tenant's user flow. MSAL (`PublicClientApplication.acquire_token_interactive`, authority `https://<subdomain>.ciamlogin.com/`) receives the ID token on `http://localhost` and checks it, and the chat takes three things from it:
 
-- `oid`, the object ID of the account, is the **user's key**. Microsoft Entra ID creates it together with the account. It never changes (not with a new name, e-mail address or password) and is never given to another account. It is the partition key of the user's items in Cosmos DB, so nobody gets another user's memory by typing a name. A deleted and newly created account has a new `oid`, so it starts with an empty memory.
-- `tid`, the tenant of the account (one fixed value for all personal accounts), is stored next to the key: the same person has another `oid` in another tenant and is then another user.
-- `name` and `preferred_username` are used only for the greeting; they can change and are not unique.
+- `oid`, the object ID of the account, is the **user's key**. Microsoft Entra ID creates it when the user signs up. It never changes (not with a new name, e-mail address or password), is never given to another account, and is the same in every app of the tenant: a later web front end registered in the same tenant sees the same users and memory. It is the partition key of the user's items in Cosmos DB, so nobody gets another user's memory by typing a name. A deleted and newly created account has a new `oid`, so it starts with an empty memory.
+- `tid`, the tenant (the external tenant, the same for every user), is stored next to the key: the same person has another `oid` in another tenant.
+- `name` and `preferred_username` (or `email`) are used only for the greeting; they can change and are not unique.
 
-The app registration (`scripts/00_sign_in_app_registration.sh`) is a public client without a secret, with the redirect URI `http://localhost`, the audience `AzureADandPersonalMicrosoftAccount` and access tokens of version 2 (which that audience requires). Its client ID is the Key Vault secret `ENTRA-APP-CLIENT-ID`. The sign-in asks for `User.Read`, so the consent page says that the app may read the basic profile; the chat calls no API with the token. Personal accounts see the app as one from an unverified publisher. Nothing is cached on disk: every start asks again, and `select_account` lets another person choose their own account. Settings: `sign_in` in `config.yaml`.
+Nothing is cached on disk: every start asks again, and `select_account` lets another person use their own account. Settings: `sign_in` in `config.yaml`. The tenant costs nothing up to 50,000 monthly active users; the paid add-ons (SMS, machine-to-machine sign-in, Go-Local, a custom sign-in domain through Azure Front Door) are not used.
 
 The sign-in only says whose memory the chat uses. The chat still reaches Key Vault, Foundry and Cosmos DB with the developer's `az login` (`DefaultAzureCredential`).
+
+#### Set up Microsoft Entra External ID
+
+Done once, in the [Microsoft Entra admin center](https://entra.microsoft.com). There is no script: `az login` works in the Azure tenant, while the app lives in the external tenant. The current set-up: tenant `travelplannercustomers.onmicrosoft.com` (country Poland, so the account data stays in the EU Data Boundary), user flow `travel-planner-last-flow`, app registration `travel-planner-console`.
+
+1. **Create the external tenant:** *Entra ID* > *Overview* > *Manage tenants* > *Create* > *External* > *Use Azure subscription*. The country can't be changed later; it decides only where the account data is stored, not where the Azure resources run. Link the tenant to the subscription with its own resource group, not the project's one, so that `az group delete` in the clean-up doesn't touch it.
+2. **Switch to it:** settings icon > *Directories + subscriptions* > *Switch*. Everything below happens in the external tenant.
+3. **User flow:** *External Identities* > *User flows* > *New user flow*: sign-in with *Email with password* (or *Email one-time passcode*), collect *Display Name*. Google, Facebook or Apple can be added later.
+4. **App registration:** *App registrations* > *New registration*: *Accounts in this organizational directory only*, redirect URI of the platform *Public client/native (mobile & desktop)* = `http://localhost`. Put the *Application (client) ID* into `signInClientId` in `scripts/01_resource_deployment.sh`.
+5. **Permissions:** *API permissions*: Microsoft Graph `User.Read` (added by default), `openid` and `offline_access`, then **Grant admin consent**. Customers of an external tenant can't consent themselves; without it every sign-in ends with "need admin approval".
+6. **Link the app to the user flow:** *User flows* > the flow > *Applications* > *Add application*. Without it the sign-in page offers no sign-up.
+7. Set `sign_in.authority` in `config.yaml` to `https://<subdomain>.ciamlogin.com/` and run the deployment (`01_resource_deployment.sh`), which writes the client ID to Key Vault.
 
 **Data model (`classes/user_memory_services.py`).** Two containers in the same database, both partitioned by `/userId` (= `oid`). All queries stay inside the user's partition.
 
@@ -1028,7 +1043,7 @@ The Foundry evaluators run in the Foundry project, not locally: the script uploa
 - A failed evaluation is recorded in the report instead of stopping the script.
 - **Scope guard first, as in the chat.** Both scripts pass a `ScopeGuard` to `EvaluateService`, so every test prompt is checked before the run. A refused prompt runs no agent: its final answer is the refusal, the rule checks run on it (a travel prompt refused by mistake fails `expected_agents` or `expected_tools`), and the LLM judge is skipped. The record holds the check under `scope_guard`, its tokens appear as one more entry `scopeGuard` in `token_usage` (next to the agents, so a run's total includes them), and its duration is added to the run's duration, because the chat user waits for both. `summary.scope_guard_refusals` counts the refused prompts. With the guard on, the `out_of_scope` case tests the guard; set `scope_guard.enabled: false` to test the manager's and `travelAgent`'s own scope rules again.
 - The runs are traced like the chat, under their own service names (see [Tracing](#tracing)). Tracing does not replace `TokenUsageMiddleware`: the report keeps its own token counts, and the traces can be used to check them.
-- Nobody answers during the evaluation: the workflow is built without plan review, and `hotelAgent`'s review tool `ask_user_about_hotels` is replaced by `approve_hotels_automatically`, which approves every choice. The review call still shows up among `hotelAgent`'s tool calls. The concierge's subagents get `skip_concierge_questions` instead of `ask_user`.
+- Nobody answers during the evaluation: the workflow is built without plan review, and `hotelAgent`'s review tool `ask_user_about_hotels` is replaced by `approve_hotels_automatically`, which approves every choice. The review call still shows up among `hotelAgent`'s tool calls. The concierge's subagents get the simulated user's `ask_user` instead (see below).
 
 **Token counting.** `TokenUsageMiddleware` is added to every `FoundryAgent`. After each agent call it reads `usage_details` from the response and adds it to the totals of that agent. The Magentic manager is called by the orchestrator and does not appear in the workflow events as an agent, so the middleware is the only place that sees its usage. The judge's tokens are taken from the evaluation results and counted separately.
 
@@ -1036,15 +1051,42 @@ The Foundry evaluators run in the Foundry project, not locally: the script uploa
 
 The concierge script uses the same `EvaluateService`, the same judge, evaluators, rule checks, token counting and report format, through methods named after the concierge:
 
-- **Test conversations (`inputs/concierge_evaluation_prompts.yaml`, `load_concierge_test_cases`).** The same requests as the active cases of `evaluation_prompts.yaml`, with the same ids, but with expectations that follow the concierge's rules: the subagents' names, and no weather expected unless the user asks for it or for a day-by-day plan within the forecast (the concierge otherwise offers it as a next step). An optional `follow_ups` list adds further user messages to the same conversation; the case `lisbon_follow_up_hotels` asks for hotels in a follow-up that does not name the city.
-- **One conversation per test case (`evaluate_concierge_test_case`).** A new session per test case; the first message and the follow-ups are sent one after another, each with the date line. The scope guard checks every message, with the concierge's previous reply as context, as in the chat. A refused message ends the conversation. The record adds `turns` (every message with its reply and scope check) and `subagent_calls` (calls and tool calls per subagent; `ask_user` shows how often a subagent asked).
-- **Nobody answers the subagents.** `skip_concierge_questions` replaces `ask_user` and returns `{"skipped": true}`, as when the user presses Enter, so a subagent goes on with its defaults and the hotel subagent keeps its choice.
-- **Final answer (`evaluate_concierge_final_answer`).** The last reply, judged by `final_answer_evaluators` with the whole conversation: the judge gets the earlier turns as the query. With one message the input is the same as for the single agent. `evaluate_agent` takes only one query string, so the item is built here.
-- **Subagents (`evaluate_concierge_subagents`).** A subagent runs inside a tool call of the concierge and leaves no workflow events, so `ConciergeCallRecorder` on every subagent records each call (the dated task, the response with its tool calls). Each call is one item, built by `_agent_item` as in the team, and scored with the subagent's evaluators: `ragDataSubagent`, `webDataSubagent`, `weatherSubagent` and `hotelSubagent` in `agent_evaluators` have the same evaluators as their team counterparts. `conciergeAgent` is not scored as an agent: the judge would see neither its rules nor the subagents' work behind its tool calls, so its routing is checked by `expected_agents` / `unexpected_agents` and its answer by the final-answer judge.
-- **Rule checks.** `check_final_answer` on the last reply, with the agents called in the whole conversation. The word limit is `max_answer_words.concierge` (500, the limit of a day-by-day plan; other replies should stay under 300).
-- **Tokens.** `as_tool()` streams the subagents, and the token usage of a streamed run exists only after the stream has been read, so `TokenUsageMiddleware` reads it through a result hook (`on_final_response`). The scope checks of all messages are one `scopeGuard` entry.
+- **Test conversations (`inputs/concierge_evaluation_prompts.yaml`, `load_concierge_test_cases`).** Two kinds, with expectations that follow the concierge's rules: the subagents' names, and no weather unless the user asks for it or for a day-by-day plan within the forecast (the concierge otherwise offers it as a next step).
+  - *Scripted*: `query` plus an optional `follow_ups` list of fixed user messages. The cases with the ids of `evaluation_prompts.yaml` repeat its active requests, so the set-ups can be compared; `lisbon_follow_up_hotels` asks for hotels in a follow-up that does not name the city.
+  - *Simulated*: `query` plus `user` (`goal`, `facts`) and an optional `max_turns`. Only the first message is fixed; the simulated user plays the rest (see [Concierge evaluator and simulator](#concierge-evaluator-and-simulator)). `lisbon_conversation` starts vague and adds hotels later, `krakow_conversation_polish` starts without a destination and answers briefly in Polish, `istanbul_conversation_visa` asks about the visa without the passport, which the web search subagent has to ask for. A case with both `follow_ups` and `user` is rejected.
+- **One conversation per test case (`evaluate_concierge_test_case`).** A new session per test case; every user message goes with the date line. The scope guard checks every message, with the concierge's previous reply as context, as in the chat. A refused message ends the conversation. The record adds `turns` (every message with its scope check, the subagents' questions with the answers under `questions`, and the reply), `subagent_calls` (calls and tool calls per subagent; `ask_user` shows how often a subagent asked) and, for a simulated case, `user_simulation`.
+- **Subagents' questions.** The subagents get the simulated user's `ask_user` (`UserSimulator.create_ask_user_tool`). In a simulated case the simulated user answers with its facts; in a scripted case every question is skipped (`{"skipped": true}`, as when the user presses Enter), so a subagent goes on with its defaults and the hotel subagent keeps its choice.
+- **Conversation (`evaluate_concierge_conversation`).** Judged by `concierge_answer_evaluators`, through Agent Framework's conversation splits: `per_turn` evaluators (`intent_resolution`) score every reply with the earlier turns as the query (`EvalItem.per_turn_items`), `whole_conversation` evaluators (`task_completion`) score the whole conversation as the answer to the first message (`ConversationSplit.FULL`). The two Foundry evaluation runs run at the same time and are merged into one `final_answer_evaluation`; every item has a `label` (`reply` or `whole conversation`), because Foundry does not keep the item order. With one message both are the same item, scored once with all evaluators, the same input as for the single agent.
+- **Subagents (`evaluate_concierge_subagents`).** A subagent runs inside a tool call of the concierge and leaves no workflow events, so `ConciergeCallRecorder` on every subagent records each call (the dated task, the response with its tool calls). Each call is one item, built by `_agent_item` as in the team, and scored with the subagent's evaluators: `ragDataSubagent`, `webDataSubagent`, `weatherSubagent` and `hotelSubagent` in `agent_evaluators` have the same evaluators as their team counterparts. `conciergeAgent` is not scored as an agent: the judge would see neither its rules nor the subagents' work behind its tool calls, so its routing is checked by `expected_agents` / `unexpected_agents` and its replies by the conversation judge.
+- **Rule checks (`check_concierge_conversation`).** The checks of `check_final_answer`, with the agents called in the whole conversation. The word limit holds for every reply: `max_answer_words.concierge` (500, the limit of a day-by-day plan; other replies should stay under 300). `expected_keywords` and `expected_answer` look at the last reply of a scripted case and at all replies of a simulated one, whose goal is often met over several replies. A simulated case adds `goal_reached`.
+- **Tokens.** `as_tool()` streams the subagents, and the token usage of a streamed run exists only after the stream has been read, so `TokenUsageMiddleware` reads it through a result hook (`on_final_response`). The scope checks of all messages are one `scopeGuard` entry. The simulated user's tokens and time are not part of `token_usage` and `duration_seconds`: they are in `user_simulation`.
 
 The report is `outputs/evaluation_conciergeWorkflow_<timestamp>.json`. For a comparison with the other set-ups, use the cases with the same id and keep in mind that the concierge's expectations differ.
+
+### Concierge evaluator and simulator
+
+The concierge leads a conversation, so a test case needs someone who plays the user. Microsoft Agent Framework has no user simulator: it only scores a finished conversation (`EvalItem`, `ConversationSplit`, `FoundryEvals`). The `Simulator` class of the `azure-ai-evaluation` package (checked in version 1.18.10) plays a user, but it does not fit the concierge, so the evaluation uses its own class, `UserSimulator` (`classes/user_simulator_services.py`).
+
+**Comparison of the built-in Simulator method with my own class**
+
+| | `Simulator` (`azure-ai-evaluation`) | `UserSimulator` (this project) |
+|---|---|---|
+| Talks with the concierge over several turns | yes | yes |
+| Ends when the goal is reached | **no**: always plays up to `max_conversation_turns` | yes (`goal_reached`); it can also give up when the assistant cannot help (`gave_up`) |
+| Answers the subagents' questions (`ask_user`) | **no**: it sees only the concierge's replies, while the subagents ask inside one turn | yes, from the test case's `facts` |
+| Persona (goal and facts, "do not give all facts at once") | only general `tasks`; the default prompt asks to keep the conversation "engaging and interactive" | own prompt in `user_simulator` in `config.yaml` |
+| Works with `gpt-5-mini` as it is | probably not: the default prompt sets `temperature: 0.0` and `top_p`, which reasoning models usually reject (not tested) | yes, structured output as in `ScopeGuard` |
+| "Goal reached" verdict for the rule checks | none | `goal_reached` rule check |
+| Simulator's cost apart from the concierge's | no | `user_simulation` in the report |
+| Extra package | yes, a large one (`pandas`, `nltk`) | no |
+
+How `UserSimulator` works:
+
+- **Model and prompts.** The `gpt-5-mini` deployment (`user_simulator.model_secret`) through `FoundryChatClient`, with structured output, `reasoning.effort: low` and `store: false`, as the scope guard. `user_simulator.instructions` decide the next step, `user_simulator.question_instructions` answer a subagent's question. The input starts with today's date and holds the goal, the facts and the conversation so far (the user's messages, the replies, the subagents' questions with the answers) between tags; the instructions say that it is data.
+- **Next step (`next_step`).** After every reply: `continue` with the next message, `goal_reached` or `gave_up`. The conversation also ends after `max_turns` user messages (the test case's, otherwise `user_simulator.max_turns`, 5) or when the simulator fails. `user_simulation.end` says why: `goal_reached`, `gave_up`, `max_turns`, `refused` (the scope guard refused a message) or `error`.
+- **Subagents' questions (`create_ask_user_tool`).** One `ask_user` tool per subagent (topic "travel guide", "web search", "weather", "hotel", as in the chat). It logs every question in the current turn; a failed answer skips the question. The tool is asynchronous, so Agent Framework runs it on the event loop.
+- **Its own cost.** `user_simulation` holds the end, its reason, the number of user messages and of answered questions, the simulator's time and tokens. The summary adds `user_simulation` (conversations, goal reached, ends, average user messages, tokens).
+- **Limits.** Every run is a different conversation, so compare scores over `repetitions` of 3 or more. `goal_reached` is the simulator's verdict, not the judge's: a weak simulator can end too early or too late. The simulated user knows only its facts and has no preference beyond them.
 
 ### Report
 
@@ -1070,7 +1112,7 @@ The `passed` / `failed` counts of an evaluation count *items*, not evaluators: a
 
 The single agent's records also hold `called_tools`: the tools found in the agent's response and how often each was called. Function tools (`get_forecast_weather`, `search_hotels_google_maps`) are always there. The server-side tools (`knowledge_base_retrieve`, `web_search`) appear when the service reports their calls, which it did in the runs of 2026-10-18, so the test prompts list them under `expected_tools` too, where the team's cases expect `ragDataAgent` or `webDataAgent`.
 
-The reports have the same format; the concierge's records also hold `turns` and `subagent_calls`. Compare the metrics in `summary.final_answer`, `summary.rule_checks` and `summary.tokens`.
+The reports have the same format; the concierge's records also hold `turns` and `subagent_calls`, a simulated conversation `user_simulation`, and the concierge's summary `user_simulation` when there were simulated cases. Compare the metrics in `summary.final_answer`, `summary.rule_checks` and `summary.tokens`.
 
 ### Settings (`evaluation` in `config.yaml`)
 
@@ -1082,9 +1124,12 @@ The reports have the same format; the concierge's records also hold `turns` and 
 | `repetitions` | Runs per test case. More than 1 shows how stable the scores are |
 | `timeout_seconds` | How long to wait for one Foundry evaluation run |
 | `max_answer_words` | Word limit of the final answer, as set in the system prompt of the manager (`magentic`), of the single agent (`single_agent`) and of the concierge (`concierge`) |
-| `final_answer_evaluators` | Foundry built-in evaluator names for the final answer |
+| `final_answer_evaluators` | Foundry built-in evaluator names for the final answer (team and single agent) |
+| `concierge_answer_evaluators` | Foundry built-in evaluator names for the concierge's conversation: `per_turn` (every reply) and `whole_conversation` |
 | `agent_evaluators` | Foundry built-in evaluator names per agent, keyed by the agent name. An agent that is missing is not evaluated |
 | `evaluate_agents` | `false` skips the agent evaluation and saves judge calls |
+
+The simulated user of the concierge evaluation has its own section `user_simulator` in `config.yaml`: `model_secret`, `reasoning_effort`, `max_turns`, `instructions` and `question_instructions`.
 
 ### Judge model
 
@@ -1096,6 +1141,7 @@ Point `judge_model_secret` at another deployment, such as `gpt-5.6-terra`, befor
 
 - Every run calls the models, and every Foundry evaluation run calls the judge model. One prompt costs one workflow run plus up to five evaluation runs for the team (final answer and four specialists), or one agent run plus two evaluation runs for the single agent. A full run of the eleven prompts is expensive: for a quick check, cut the test prompts down to two or three cases.
 - With one run per test case, small differences between two reports (for example 4.4 against 4.6) are noise. For a comparison, use `repetitions` of 3 or more.
+- A simulated concierge conversation costs up to `max_turns` concierge turns (each with its subagents), the simulator's small calls, and two judge runs for the conversation (per reply and as a whole) plus one per subagent called. Comment out the simulated cases for a quick check of the scripted ones.
 
 ---
 
@@ -1193,11 +1239,7 @@ To stop incurring costs, delete the resource group. Some resources stay soft-del
 
 Cosmos DB, AI Search, Storage and Application Insights are deleted immediately.
 
-The sign-in app registration (`<prefix>-sign-in`) lives in Microsoft Entra ID, not in the resource group, so deleting the group keeps it. It costs nothing; delete it when the project is gone for good (it stays restorable for 30 days under *Deleted applications* in the Entra admin center):
-
-```powershell
-az ad app delete --id "$(az ad app list --display-name <prefix>-sign-in --query '[0].appId' -o tsv)"
-```
+The External ID tenant of the concierge's sign-in (with its user accounts, user flow and app registration) is not in the resource group, so deleting the group keeps it. It costs nothing; delete it only when the project is gone for good, in the Entra admin center (*Entra ID* > *Overview* > *Manage tenants*), after deleting its users and app registrations.
 
 Use the region the resources were deployed to as `<location>`:
 

@@ -122,10 +122,5 @@ def create_ask_user_tool(topic: str, answers_log: list | None = None) -> Functio
     return ask_user
 
 
-# The concierge's subagents have ask_user in their server-side definition, so the evaluation must also
-# run one. Nobody answers there: every question is skipped, as when the user presses Enter, and the
-# subagent goes on with its defaults (the hotel subagent keeps its choice).
-@tool(name="ask_user")
-def skip_concierge_questions(question: str) -> Dict[str, Any]:
-    """Stand-in for ask_user in the concierge evaluation: skips every question without asking."""
-    return {"skipped": True}
+# The concierge evaluation gives the subagents the ask_user of its simulated user instead
+# (UserSimulator.create_ask_user_tool in classes/user_simulator_services.py).

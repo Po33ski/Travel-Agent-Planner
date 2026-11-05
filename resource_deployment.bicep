@@ -28,8 +28,9 @@ param containerName string = '${projectPrefix}-container'
 // Long-term memory of the concierge chat: profile and trips of every user, and the chats saved for fine-tuning
 param memoryContainerName string = '${projectPrefix}-memory'
 param fineTuningContainerName string = '${projectPrefix}-finetuning'
-// Client ID of the app registration with which the concierge chat signs users in (Microsoft Entra ID).
-// scripts/00_sign_in_app_registration.sh registers the app; scripts/01_resource_deployment.sh passes its client ID.
+// Client ID of the app registration with which the concierge chat signs users in: travel-planner-console in the
+// Microsoft Entra External ID tenant travelplannercustomers.onmicrosoft.com (registered in the Entra admin center).
+// scripts/01_resource_deployment.sh passes it.
 @minLength(1)
 param signInClientId string
 // Observability: Application Insights stores its data in the Log Analytics workspace
@@ -86,6 +87,10 @@ resource aiFoundry 'Microsoft.CognitiveServices/accounts@2026-05-01' = {
     customSubDomainName: aiFoundryName
 
     disableLocalAuth: false
+
+    // Must be set explicitly: an update without it failed on 2026-11-04 with
+    // "PublicNetworkAccess is required for this resource" (AIServices and TextAnalytics accounts)
+    publicNetworkAccess: 'Enabled'
   }
 }
 
@@ -273,7 +278,7 @@ resource speech 'Microsoft.CognitiveServices/accounts@2026-05-01' = {
   properties: {
     customSubDomainName: speechName
     disableLocalAuth: false
-  
+    publicNetworkAccess: 'Enabled'  // set explicitly, as for the Foundry and Language accounts
   }
 }
 
@@ -294,6 +299,7 @@ resource language 'Microsoft.CognitiveServices/accounts@2026-05-01' = {
   properties: {
     customSubDomainName: languageName
     disableLocalAuth: false
+    publicNetworkAccess: 'Enabled'  // required on every update (see the Foundry account)
   }
 }
 

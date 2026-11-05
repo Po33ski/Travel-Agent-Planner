@@ -8,3 +8,6 @@ __pycache__/
 inputs/
 outputs/
 CHANGELOG.md
+azure_app_config.md
+# Separate private repository of the web app (travel_web_app)
+web_app/
