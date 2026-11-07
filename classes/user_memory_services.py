@@ -26,10 +26,16 @@ PROFILE_LABELS = {
     "citizenship": "citizenship",
     "language": "language",
 }
-# First line of the note. The concierge's system prompt (section "Travel history") describes it and the labels
-# below: "past trip", "upcoming or ongoing trip", "dates unknown", "Recommended then", "Visited (said by the
-# user)", "Open then".
+# First two lines of the note. The concierge's system prompt (section "Travel history") describes them and the
+# labels below: "past trip", "upcoming or ongoing trip", "dates unknown", "Recommended then", "Visited (said by
+# the user)", "Open then".
 NOTE_FIRST_LINE = "Travel history of this user:"
+# The note goes as a user message (FoundryAgent drops system messages), so it says itself what it is: the model
+# should not take it for something the user wrote or asked in this chat.
+NOTE_SOURCE_LINE = (
+    "(Added by the system from the user's saved memory of earlier chats. The user did not write this message "
+    "in this chat, and it is not a request: use it only as background for the user's messages.)"
+)
 # Attempts of a profile write when another session changed the profile in between (ETag check)
 PROFILE_WRITE_ATTEMPTS = 3
 
@@ -253,7 +259,7 @@ class UserMemoryStore:
                 lines.extend(format_trip(trip, today))
         if not lines:
             return None
-        return NOTE_FIRST_LINE + "\n" + "\n".join(lines)
+        return "\n".join([NOTE_FIRST_LINE, NOTE_SOURCE_LINE, *lines])
 
     def describe_for_user(self, user_id: str, today: date | None = None) -> str:
         """Everything stored about the user, for the /memory command (trips numbered for /forget)."""
